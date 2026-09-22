@@ -1,0 +1,54 @@
+# ===== 构建产物 =====
+build/
+out/
+Output/
+Objects/
+Listings/
+Debug/
+Release/
+*.o
+*.obj
+*.d
+*.su
+*.elf
+*.axf
+*.bin
+*.hex
+*.map
+*.lst
+*.list
+*.dis
+
+# ===== Keil MDK =====
+*.uvguix.*
+*.uvgui.*
+*.uvopt
+*.uvoptx
+*.dep
+*.crf
+*.iex
+*.scvd
+*.dbgconf
+*.lnp
+*.bak
+JLinkLog.txt
+JLinkSettings.ini
+
+# ===== EIDE 生成物 =====
+.eide/out/
+.eide/debug/
+.eide/.cache/
+
+# ===== IDE 个人配置 =====
+.idea/
+.vscode/ipch/
+
+# ===== 旧仓库残留工作区 =====
+Core.worktrees/
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
