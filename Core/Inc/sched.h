@@ -1,5 +1,5 @@
-#ifndef TASK_H
-#define TASK_H
+#ifndef SCHED_H
+#define SCHED_H
 #include "main.h"
 
 // 基础版：一个模块只有一个周期性任务

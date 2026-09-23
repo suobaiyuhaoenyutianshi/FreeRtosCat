@@ -1,12 +1,15 @@
 #include "app_motor.h"
 #include "delay.h"
-#include "task.h"
+#include "FreeRTOS.h"
+#include "sched.h"
 
 #include "pid.h"
 #include "app_encoder.h"
 #include "app_pwm.h"
 #include "app_bat.h"
 #include <stdint.h>
+#include "stm32f103xb.h"
+#include "task.h"
 static PID_TypeDef pid_mot_l;
 static PID_TypeDef pid_mot_r;
 
@@ -43,8 +46,8 @@ void App_Motor_Cmd(uint8_t On){
         PID_Reset(&pid_mot_r);
     }
 }
-void App_Motor_Proc(void){
-    PERIODIC(1);
+void App_Motor_Proc(void* argument){
+   
     uint64_t now = GetUs();
     //当前转速
     float speed_l = App_Encoder_GetSpeed_L();
@@ -60,3 +63,7 @@ void App_Motor_Proc(void){
     App_PWM_Set_R(duty_r);
 
 }
+
+/* 电机 1ms 环已挂到 TIM2 中断，回调统一放在 main.c 的 HAL_TIM_PeriodElapsedCallback：
+   在 TIM2 分支里先 HAL_IncTick() 喂 HAL 时基，再 App_Motor_Proc() 跑电机环。
+   这里不再重复定义，否则会链接报 multiple definition。 */

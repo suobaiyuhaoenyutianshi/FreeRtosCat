@@ -21,6 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "FreeRTOS.h"
+#include "memory_monitor.h"
+#include "portmacro.h"
+#include "projdefs.h"
+#include "task.h"
 #include "app_control.h"
 #include "app_pwm.h"
 #include "app_bat.h"
@@ -30,6 +35,7 @@
 #include "stm32f1xx_hal_gpio.h"
 #include "stm32f1xx_hal_uart.h"
 #include <stdint.h>
+#include <sys/_types.h>
 
 /* USER CODE END Includes */
 
@@ -45,6 +51,8 @@
 #include "app_rc.h"
 #include "button.h"
 #include "app_motor.h"
+#include "memory.h"
+#include "app_usart1_dma.h" 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -73,7 +81,7 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
-
+TaskHandle_t mot;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -87,7 +95,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void App_TempControl_Task(void *argument);   // 迁移过渡用的临时任务，验证完就删
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -140,15 +148,30 @@ int s =1;
   APP_batInit();
   App_Encoder_Init();
   App_RC_Init();
-  APP_batInit();
-  App_RC_Init();
   App_MPU6050_Init();
-
-  Button_InitTypeDef butt;
-  butt.GPIOx = GPIOA;butt.GPIO_Pin =GPIO_PIN_11;
-  button_TypeDef Buutt; 
-  My_Button_Init(&Buutt,&butt);
+  App_Control_Init();
+  App_Motor_Init();
   
+  TaskHandle_t ctl;TaskHandle_t att;TaskHandle_t ctrl;TaskHandle_t rc;
+  /* 临时控制任务：栈 384 字（=1.5KB，因为里面有 sscanf 和一堆 PID 浮点运算），
+     优先级故意给 2（低于姿态任务的 3），原因见函数注释 */
+  xTaskCreate(App_TempControl_Task, "ctl", 384, NULL, 2, &ctl);
+  
+  /* 创建姿态任务：栈 256 字（= 1KB），优先级 3 */
+  xTaskCreate(App_Attitude_Task, "att", 256, NULL, 3, &att);
+
+  /* 创建控制任务：栈 384 字，优先级 4（最高），周期 5ms */
+  xTaskCreate(App_Control_Task, "ctrl", 384, NULL, 4, &ctrl);
+  xTaskCreate( App_Motor_Proc,"motor",128,NULL,5,&mot);
+  /* 创建遥控接收任务：栈 256 字，优先级 2 */
+  xTaskCreate(APP_rc_rxTask, "rc", 256, NULL, 2, &rc);
+  vRegisterTaskForMonitoring(ctl);
+  vRegisterTaskForMonitoring(att);
+  vRegisterTaskForMonitoring(ctrl);
+  vRegisterTaskForMonitoring(rc);
+  /* 启动调度器。正常情况永远不会返回 */
+  vTaskStartScheduler();
+
 /*uint8_t TE[] = "holl";
  uint8_t txData[] = "Hello, UART!\r\n";
     uint16_t dataLen = sizeof(txData) - 1; // 不发送末尾的 '\0'
@@ -164,21 +187,11 @@ HAL_UART_Transmit(&huart2,TE,strlen(TE),HAL_MAX_DELAY);
   App_PWM_Cmd(1);
  // App_PWM_Set_L(100);
   //mputest(&(e.a));
+  /* 走到这里说明 vTaskStartScheduler() 启动失败（多半是 FreeRTOS 堆不够，
+     堆在 FreeRTOSConfig.h 的 configTOTAL_HEAP_SIZE）。原来那套函数已经全部
+     搬到 App_TempControl_Task 里了。 */
   while (1)
   {
-    
-    App_Bat_Pro();
-    My_Button_Proc( &Buutt);
-    
-    App_Motor_Proc();
-    App_MPU6050_Proc();
-    App_Control_Proc();
-   App_RC_Proc();
-  
-    
-    
-    
-    
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -628,7 +641,74 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+  * @brief  临时控制任务（迁移过渡用，不是最终形态）
+  * @note   函数体原样搬的是原来 main() 里 while(1) 的内容，PERIODIC(ms) 一个都没动。
+  *         目的：验证"FreeRTOS 接管之后，原来那套裸机逻辑还能不能正常跑"。
+  *
+  *         优先级故意给 2（低于姿态任务的 3）：本任务里没有任何阻塞，
+  *         如果给它更高优先级，姿态任务会被活活饿死（永远轮不到它跑）。
+  *
+  *         等控制环拆成真正的任务后，把这个函数和它的 xTaskCreate 一起删掉。
+  */
+static void App_TempControl_Task(void *argument)
+{
+  (void)argument;
+
+  Button_InitTypeDef butt;
+  butt.GPIOx = GPIOA;
+  butt.GPIO_Pin = GPIO_PIN_11;
+  button_TypeDef btn;
+  My_Button_Init(&btn, &butt);
+
+  for (;;)
+  {
+    App_Bat_Pro();
+    My_Button_Proc(&btn);
+  }
+}
+
+/**
+  * @brief  任务栈溢出钩子
+  * @note   configCHECK_FOR_STACK_OVERFLOW = 2 时必须由用户提供，否则链接报错。
+  *         在这里下断点，pcTaskName 就是爆栈的那个任务。
+  */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  (void)xTask;
+  (void)pcTaskName;
+  taskDISABLE_INTERRUPTS();
+  for (;;)
+  {
+  }
+}
+
 /* USER CODE END 4 */
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM2 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM2) {
+    HAL_IncTick(); 
+    BaseType_t xhw = pdFALSE;      // 喂 HAL 时基（uwTick++，1ms）
+   // App_Motor_Proc();    // 1ms 电机环：挂在 TIM2 时基中断里，替代原来任务里的轮询
+   vTaskNotifyGiveFromISR(mot,&xhw);
+   portYIELD_FROM_ISR(&xhw);
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

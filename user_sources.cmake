@@ -1,10 +1,16 @@
-# 自动收集 Core/Src 和 Core/Inc 下你自己添加的所有 .c 和 .h 文件
+# 1. 收集所有 .c（只收集 .c，不要收集 .h）
 file(GLOB_RECURSE USER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/freeRTOS/Src/*.c"
 )
-target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -u _printf_float)
-# 把这些文件加到你的可执行目标里
+
+# 2. 编译源文件
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${USER_SOURCES})
 
-# 如果没有 Inc 目录也可以，C 文件会自动被包含
+# 3. 添加头文件搜索路径（让编译器能找到你写的 .h）
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/freeRTOS/Inc"
+)
+
+

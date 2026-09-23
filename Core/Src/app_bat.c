@@ -6,11 +6,11 @@
 #include "stm32f1xx_hal_gpio.h"
 #include "stm32f1xx_hal_tim.h"
 #include <stdint.h>
-#include "task.h"
+#include "sched.h"
 
 #include "app_bat.h"
 #include "main.h"
-#include "task.h"
+#include "sched.h"
 
 static volatile float Volt;
 
