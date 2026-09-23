@@ -1,6 +1,8 @@
 #include "app_motor.h"
 #include "delay.h"
 #include "FreeRTOS.h"
+#include "portmacro.h"
+#include "projdefs.h"
 #include "sched.h"
 
 #include "pid.h"
@@ -47,7 +49,9 @@ void App_Motor_Cmd(uint8_t On){
     }
 }
 void App_Motor_Proc(void* argument){
-   
+   for (;;) {
+    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+  
     uint64_t now = GetUs();
     //当前转速
     float speed_l = App_Encoder_GetSpeed_L();
@@ -61,7 +65,7 @@ void App_Motor_Proc(void* argument){
     float duty_r = (totalBatVol> 0.1)?(vol_r/totalBatVol):0.0f;
     App_PWM_Set_L(duty_l);
     App_PWM_Set_R(duty_r);
-
+   }
 }
 
 /* 电机 1ms 环已挂到 TIM2 中断，回调统一放在 main.c 的 HAL_TIM_PeriodElapsedCallback：
