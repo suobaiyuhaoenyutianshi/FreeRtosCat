@@ -79,6 +79,7 @@ TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 TaskHandle_t mot;
@@ -87,6 +88,7 @@ TaskHandle_t mot;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
@@ -135,6 +137,7 @@ int s =1;
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_TIM1_Init();
@@ -151,7 +154,7 @@ int s =1;
   App_MPU6050_Init();
   App_Control_Init();
   App_Motor_Init();
-  
+  App_USART1_Init();
   TaskHandle_t ctl;TaskHandle_t att;TaskHandle_t ctrl;TaskHandle_t rc;
   /* 临时控制任务：栈 384 字（=1.5KB，因为里面有 sscanf 和一堆 PID 浮点运算），
      优先级故意给 2（低于姿态任务的 3），原因见函数注释 */
@@ -160,7 +163,7 @@ int s =1;
   /* 创建姿态任务：栈 256 字（= 1KB），优先级 3 */
   xTaskCreate(App_Attitude_Task, "att", 256, NULL, 3, &att);
 
-  /* 创建控制任务：栈 384 字，优先级 4（最高），周期 5ms */
+  /* 创建控制任务：栈 384 字，优先级 4，周期 5ms */
   xTaskCreate(App_Control_Task, "ctrl", 384, NULL, 4, &ctrl);
   xTaskCreate( App_Motor_Proc,"motor",128,NULL,5,&mot);
   /* 创建遥控接收任务：栈 256 字，优先级 2 */
@@ -572,6 +575,22 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -699,11 +718,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM2) {
-    HAL_IncTick(); 
-    BaseType_t xhw = pdFALSE;      // 喂 HAL 时基（uwTick++，1ms）
-   // App_Motor_Proc();    // 1ms 电机环：挂在 TIM2 时基中断里，替代原来任务里的轮询
-   vTaskNotifyGiveFromISR(mot,&xhw);
-   portYIELD_FROM_ISR(&xhw);
+    HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
 

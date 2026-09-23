@@ -4,6 +4,7 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "queue.h"
+#include "stm32f103xb.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -25,7 +26,7 @@ static SemaphoreHandle_t xTxDmaSem;
 // ======================== DMA 发送完成中断回调 ========================
 volatile uint32_t tx_cplt_count = 0;
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == USART1) {
+    if (huart->Instance == USART2) {
         tx_cplt_count++;
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         if (xTxDmaSem != NULL) {
