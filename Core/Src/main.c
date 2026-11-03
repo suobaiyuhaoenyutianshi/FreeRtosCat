@@ -41,26 +41,20 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#include "app_usart2.h"
 #include "app_bat.h"
 #include "app_pwm.h"
 #include "delay.h"
 #include "app_encoder.h"
 #include "app_mpu6050.h"
-#include "mputest.h"
 #include "app_rc.h"
 #include "button.h"
 #include "app_motor.h"
 #include "memory.h"
-#include "app_usart1_dma.h" 
+#include "app_usart2_dma.h" 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-typedef struct test{
-  uint64_t a ;
-}te;
-te e ={0};
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -80,6 +74,7 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart2_tx;
+DMA_HandleTypeDef hdma_usart3_rx;
 
 /* USER CODE BEGIN PV */
 TaskHandle_t mot;
@@ -97,7 +92,6 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
-static void App_TempControl_Task(void *argument);   // 迁移过渡用的临时任务，验证完就删
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -154,24 +148,26 @@ int s =1;
   App_MPU6050_Init();
   App_Control_Init();
   App_Motor_Init();
-  App_USART1_Init();
-  TaskHandle_t ctl;TaskHandle_t att;TaskHandle_t ctrl;TaskHandle_t rc;
-  /* 临时控制任务：栈 384 字（=1.5KB，因为里面有 sscanf 和一堆 PID 浮点运算），
-     优先级故意给 2（低于姿态任务的 3），原因见函数注释 */
-  xTaskCreate(App_TempControl_Task, "ctl", 384, NULL, 2, &ctl);
+  App_USART2_Init();
+  TaskHandle_t att;TaskHandle_t ctrl;TaskHandle_t rc;
   
-  /* 创建姿态任务：栈 256 字（= 1KB），优先级 3 */
-  xTaskCreate(App_Attitude_Task, "att", 256, NULL, 3, &att);
-
-  /* 创建控制任务：栈 384 字，优先级 4，周期 5ms */
+  /* 创建控制任务：栈 384 字，优先级 4，周期 5ms。
+     事件驱动修复：必须【先创建】控制任务，才能把它的句柄 ctrl 传给姿态任务作通知目标 */
   xTaskCreate(App_Control_Task, "ctrl", 384, NULL, 4, &ctrl);
+
+  /* 创建姿态任务：栈 256 字（= 1KB），优先级 3。
+     事件驱动修复：把 ctrl 传给它，姿态任务写完邮箱就 vTaskNotifyGive(ctrl) 通知控制任务 */
+  xTaskCreate(App_Attitude_Task, "att", 256, ctrl, 3, &att);
+
   xTaskCreate( App_Motor_Proc,"motor",128,NULL,5,&mot);
   /* 创建遥控接收任务：栈 256 字，优先级 2 */
   xTaskCreate(APP_rc_rxTask, "rc", 256, NULL, 2, &rc);
-  vRegisterTaskForMonitoring(ctl);
   vRegisterTaskForMonitoring(att);
   vRegisterTaskForMonitoring(ctrl);
   vRegisterTaskForMonitoring(rc);
+  vRegisterTaskForMonitoring(mot);
+  /* 启动内存监控任务，周期性打印各任务栈高水位 + 堆用量 */
+  vStartMemoryMonitor();
   /* 启动调度器。正常情况永远不会返回 */
   vTaskStartScheduler();
 
@@ -185,14 +181,9 @@ HAL_UART_Transmit(&huart2,TE,strlen(TE),HAL_MAX_DELAY);
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  //App_Bat_Pro();
-  
   App_PWM_Cmd(1);
- // App_PWM_Set_L(100);
-  //mputest(&(e.a));
   /* 走到这里说明 vTaskStartScheduler() 启动失败（多半是 FreeRTOS 堆不够，
-     堆在 FreeRTOSConfig.h 的 configTOTAL_HEAP_SIZE）。原来那套函数已经全部
-     搬到 App_TempControl_Task 里了。 */
+     堆在 FreeRTOSConfig.h 的 configTOTAL_HEAP_SIZE）。 */
   while (1)
   {
     /* USER CODE END WHILE */
@@ -584,6 +575,9 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Channel3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
   /* DMA1_Channel7_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
@@ -661,33 +655,6 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /**
-  * @brief  临时控制任务（迁移过渡用，不是最终形态）
-  * @note   函数体原样搬的是原来 main() 里 while(1) 的内容，PERIODIC(ms) 一个都没动。
-  *         目的：验证"FreeRTOS 接管之后，原来那套裸机逻辑还能不能正常跑"。
-  *
-  *         优先级故意给 2（低于姿态任务的 3）：本任务里没有任何阻塞，
-  *         如果给它更高优先级，姿态任务会被活活饿死（永远轮不到它跑）。
-  *
-  *         等控制环拆成真正的任务后，把这个函数和它的 xTaskCreate 一起删掉。
-  */
-static void App_TempControl_Task(void *argument)
-{
-  (void)argument;
-
-  Button_InitTypeDef butt;
-  butt.GPIOx = GPIOA;
-  butt.GPIO_Pin = GPIO_PIN_11;
-  button_TypeDef btn;
-  My_Button_Init(&btn, &butt);
-
-  for (;;)
-  {
-    App_Bat_Pro();
-    My_Button_Proc(&btn);
-  }
-}
-
-/**
   * @brief  任务栈溢出钩子
   * @note   configCHECK_FOR_STACK_OVERFLOW = 2 时必须由用户提供，否则链接报错。
   *         在这里下断点，pcTaskName 就是爆栈的那个任务。
@@ -695,7 +662,8 @@ static void App_TempControl_Task(void *argument)
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
   (void)xTask;
-  (void)pcTaskName;
+  /* 打印爆栈任务名，方便定位是哪个栈爆了 */
+  App_USART2_Printf("*** STACK OVERFLOW in task: %s ***\n", pcTaskName);
   taskDISABLE_INTERRUPTS();
   for (;;)
   {
@@ -715,13 +683,19 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-
+  BaseType_t xhw = pdFALSE;
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM2) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  if (htim->Instance == TIM2) { 
+    if (mot != NULL ) {
+      vTaskNotifyGiveFromISR(mot, &xhw);
+      portYIELD_FROM_ISR(&xhw);
+    }
+  }
+ 
   /* USER CODE END Callback 1 */
 }
 

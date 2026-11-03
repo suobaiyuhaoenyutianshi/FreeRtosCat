@@ -280,7 +280,13 @@
  * or heap_4.c are included in the build.  This value is defaulted to 4096 bytes but
  * it must be tailored to each application.  Note the heap will appear in the .bss
  * section.  See https://www.freertos.org/a00111.html. */
-#define configTOTAL_HEAP_SIZE                        ( 6 * 1024 )
+/* 本工程堆总账（heap_4，portBYTE_ALIGNMENT=8，每次分配另加 8B 块头）：
+ *   6 个动态任务：栈 6144B + 6*8B 块头 + TCB 6*96B = 6768B
+ *                 （TCB sizeof=84B，加块头对齐后每次占 96B）
+ *   2 个队列 + 2 个信号量：104 + 96 + 80 + 80 = 360B（Queue_t sizeof=72B）
+ *   常驻合计 7128B；再加打印缓冲峰值 272B（MAX_PRINTF_LEN=256），约 7400B。
+ *   取 7680B 作为堆大小，留约 280B 余量；Idle/Timer 任务栈为静态内存，不占堆。 */
+#define configTOTAL_HEAP_SIZE                        ( 7680 )
 
 /* Set configAPPLICATION_ALLOCATED_HEAP to 1 to have the application allocate
  * the array used as the FreeRTOS heap.  Set to 0 to have the linker allocate the

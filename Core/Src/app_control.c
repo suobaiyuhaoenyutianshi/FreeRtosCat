@@ -4,6 +4,7 @@
 #include "qmath.h"
 #include "app_motor.h"
 #include "app_encoder.h"
+#include "app_bat.h"
 #include "delay.h"
 #include "sched.h"
 #include <stdint.h>
@@ -16,9 +17,18 @@ static const float GRAVITY_MPS2   = 9.8f;    // 重力加速度 m/s²
 static const float PENDULUM_LEN_M = 0.062f;  // 质心到轮轴距离 m
 static const float WHEEL_RADIUS_M = 0.032f;  // 车轮半径 m
 
+/* ===== 安全限幅 =====
+ * 目标轮速上限：取“物理上真能跑到的最大转速”。
+ * 换算：地面 1.0 m/s ÷ 车轮半径 0.032 m ≈ 31.25 rad/s，取 31.4 rad/s（约 5 圈/秒）。
+ * 意义：wheel_omega_ref_radps 既是积分器的状态量，又直接当电机的目标转速下发，
+ *       一旦超过电机实际能力，环路就进入“饱和区”，必须限住。 */
+#define WHEEL_OMEGA_REF_MAX_RADPS   (31.4f)
+
 /* ===== 控制器状态 ===== */
 static volatile uint64_t last_calc_us = 0;         // 上次控制运算的时间戳 (us)
 static float wheel_omega_ref_radps = 0.0f;         // 积分得到的目标轮速 (rad/s)
+static Attitude_t last_good_att;                   // 最近一次有效的姿态快照（fail-safe 兜底用）
+static uint32_t   att_fail_cnt = 0;                // 连续失效次数（预留：可据此做超阈降级/停车）
 
 //PID 控制器定义
 static PID_TypeDef pid_speed;      //速度环     输入 m/s      输出 m/s²
@@ -63,18 +73,40 @@ void App_Control_Init(void){
  */
 void App_Control_Proc(void){
     uint64_t now_us = GetUs();
-    float dt_s = (now_us - last_calc_us)*1.0e-6f;//真正的时间间隔
+    /////有问题  记得你要一开始测个默认值
+    /* ===== 1. 计算控制周期 dt =====
+     * 原理：dt 是积分器的“步长”。积分式是  目标轮速 += 加速度 × dt，
+     *       所以 dt 错，积分结果就错，而且误差会在每一步累积。
+     * 标称周期是 5ms（见 App_Control_Task 里的 vTaskDelayUntil），
+     * 但真实间隔会被这些情况拉长：任务被高优先级抢占、中断占用较久、
+     * 调试时下断点暂停、以及上电后的第一次调用。
+     *
+     * 【单位陷阱】dt 必须在“微秒域”钳位，再转成秒。若在秒域判断，
+     * 阈值就会错 100 万倍（100000us 的钳位写成 100000s），形同虚设。
+     */
+    uint64_t diff_us = now_us - last_calc_us;   // 时间差 (us)，无符号相减，回绕安全
+    if (diff_us > 100000u) {                    // 超过 100ms（20×5ms）算异常
+        diff_us = 5000u;                        // 回退到标称 5ms，防巨量灌进积分器
+    }
+    float dt_s = diff_us * 1.0e-6f;             // 真正的时间间隔 (s)
     float wheel_omega_meas = (App_Encoder_GetSpeed_R()+App_Encoder_GetSpeed_L())/2;
     Attitude_t a;
      float pitch_rad       ;
     float pitch_rate_radps ;
    if ( App_MPU6050_GetAttitude(&a)==0) {
-     pitch_rad        = 0.00f;  // 倾角 ° →rad
-    pitch_rate_radps = 0.00f;
-    a.pitch=0;a.gx=0;
-    a.gz=0;
+     /* 修复前：姿态失效时把 pitch/gx/gz 全部置0 —— 这会让转向环 gz=0 看似"没有偏差"，
+        小车会继续直行(假装健康)，违反"禁止静默填充默认值掩盖故障"的约束，最危险。
+        修复后：X 用的是"上一帧有效姿态"，而非清零假装健康。
+        bound: 若连续失效帧数超阈值(如 10 次=50ms)，表明传感器链路真断了，
+        att_fail_cnt 已累计，可在此接入"停车降级"逻辑(当前仅预留计数)。 */
+     att_fail_cnt++;
+     a = last_good_att;
+     pitch_rad        = a.pitch * 0.0174533f;
+     pitch_rate_radps = a.gx * 0.0174533f;
    }else {
-   
+   /* 修复后新增：每读到一帧有效姿态就缓存一份，供下次失效时兜底 */
+     last_good_att = a;
+     att_fail_cnt  = 0;
     pitch_rad        = a.pitch * 0.0174533f;  // 倾角 ° →rad
     pitch_rate_radps = a.gx*0.0174533f;// 角速度 °/s → rad/s
    }
@@ -112,6 +144,20 @@ void App_Control_Proc(void){
     float accel_wheel_ref_mps2 = (GRAVITY_MPS2 * qsin(pitch_rad) - pitch_accel_ref_radps2 * PENDULUM_LEN_M) / qcos(pitch_rad);
     if (last_calc_us!=0) {
         wheel_omega_ref_radps += (1.0f / WHEEL_RADIUS_M) * accel_wheel_ref_mps2 * dt_s;
+
+        /* 积分限幅（anti-windup，抗积分饱和）
+         * 原理：wheel_omega_ref_radps 有两个身份——一个是积分器的状态量，
+         *       另一个是直接下发给电机速度环的目标值。
+         * 为什么必须限：积分器不看电机能不能做到，只按误差不停累加。如果目标值
+         *       超过了电机/车实际能达到的转速，电机早就转不动了（饱和），而积分
+         *       还在继续涨；等到误差反向时，必须先把这个“多存下来的量”反向积
+         *       回去，环路才会重新响应——这段延迟就表现为车失控、压不回来。
+       * 限幅值：WHEEL_OMEGA_REF_MAX_RADPS，即物理上真正能跑到的最大转速。 */
+        if (wheel_omega_ref_radps > WHEEL_OMEGA_REF_MAX_RADPS) {
+            wheel_omega_ref_radps = WHEEL_OMEGA_REF_MAX_RADPS;
+        } else if (wheel_omega_ref_radps < -WHEEL_OMEGA_REF_MAX_RADPS) {
+            wheel_omega_ref_radps = -WHEEL_OMEGA_REF_MAX_RADPS;
+        }
     }
     float yaw_rate_meas_radps = a.gz*0.0174533f;
     float yaw_diff_omega   =  PID_Compute1(&pid_yaw_rate,yaw_rate_meas_radps,now_us) ;
@@ -144,9 +190,16 @@ void App_Contro_setTurnSpeed(float target_speed){
 }
 void App_Control_Task(void *argument){
     (void)argument;
-    TickType_t last_wake = xTaskGetTickCount();
+    /* 事件驱动修复：控制任务不再用固定 5ms 轮询，而是等姿态任务发来的通知。
+       修复前：同周期 + Peek 碰运气读帧，控制环可能用上一帧姿态（相位不确定性）。
+       修复后：姿态任务每写完一帧就 vTaskNotifyGive 通知本任务，取到的必是最新帧。
+       注意：pdTRUE 清零语义一次清光累积通知，避免"堆积多帧只唤醒一次"的坑。
+             初值给 1，保证上电调度器启动后先跑一帧，避免首帧空等。 */
     for(;;){
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         App_Control_Proc();
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(5U));
+        /* 电量指示：原临时任务删除后，这条 20ms 内部节流的裸机逻辑
+           并入控制任务，保证低电量 LED 行为不变 */
+        App_Bat_Pro();
     }
 }
