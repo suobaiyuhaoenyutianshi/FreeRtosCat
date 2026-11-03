@@ -280,12 +280,15 @@
  * or heap_4.c are included in the build.  This value is defaulted to 4096 bytes but
  * it must be tailored to each application.  Note the heap will appear in the .bss
  * section.  See https://www.freertos.org/a00111.html. */
-/* 本工程堆总账（heap_4，portBYTE_ALIGNMENT=8，每次分配另加 8B 块头）：
- *   6 个动态任务：栈 6144B + 6*8B 块头 + TCB 6*96B = 6768B
- *                 （TCB sizeof=84B，加块头对齐后每次占 96B）
- *   2 个队列 + 2 个信号量：104 + 96 + 80 + 80 = 360B（Queue_t sizeof=72B）
- *   常驻合计 7128B；再加打印缓冲峰值 272B（MAX_PRINTF_LEN=256），约 7400B。
- *   取 7680B 作为堆大小，留约 280B 余量；Idle/Timer 任务栈为静态内存，不占堆。 */
+/* 本工程堆总账（heap_4，portBYTE_ALIGNMENT=8，每次分配另加 8B 块头再按 8B 对齐）：
+ *   6 个动态任务（UART2_TX 256 / ctrl 384 / att 256 / motor 128 / rc 256 / MemMon 256 字）：
+ *     栈 6144B + 块头 6*8B + TCB 6*96B(84B 结构 + 8B 块头对齐到 96B) = 6768B
+ *   2 个队列（各 20B 存储：姿态邮箱 1*20B、打印队列 5*4B）+ 2 个二值信号量：
+ *     104 + 104 + 80 + 80 = 368B（Queue_t sizeof=72B）
+ *   常驻合计 7136B；heap_4 末端 pxEnd 占 8B，静态余量约 536B。
+ *   打印缓冲为动态临时分配：队列 5 份 + DMA 在发 1 份，最多 6 份并存
+ *   （单份上限 272B，监控输出单行约 56B），预留后余量约 200B。
+ *   Idle/Timer 任务栈由内核静态内存提供（configKERNEL_PROVIDED_STATIC_MEMORY=1），不占堆。 */
 #define configTOTAL_HEAP_SIZE                        ( 7680 )
 
 /* Set configAPPLICATION_ALLOCATED_HEAP to 1 to have the application allocate
