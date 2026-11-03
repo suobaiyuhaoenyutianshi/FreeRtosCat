@@ -1,5 +1,5 @@
 // ======================== 头文件包含 ========================
-#include "app_usart1_dma.h"
+#include "app_usart2_dma.h"
 #include "main.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -12,9 +12,8 @@
 #include <stdlib.h>
 TaskHandle_t usart2;
 // ======================== 引用外部硬件句柄 ========================
-extern UART_HandleTypeDef huart1;
-extern DMA_HandleTypeDef hdma_usart1_tx;
-//extern uint32_t prio;
+extern UART_HandleTypeDef huart2;
+extern DMA_HandleTypeDef hdma_usart2_tx;
 // ======================== 可调配置宏 ========================
 #define TX_QUEUE_LEN       5
 #define MAX_PRINTF_LEN     256
@@ -32,24 +31,22 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
         if (xTxDmaSem != NULL) {
          xSemaphoreGiveFromISR(xTxDmaSem, &xHigherPriorityTaskWoken);
         }
-        //xSemaphoreGiveFromISR(xTxDmaSem, &xHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
 }
 // ======================== 守门员任务 ========================
-static void vUSART1_TxGateKeeperTask(void *pvParameters)
+static void vUSART2_TxGateKeeperTask(void *pvParameters)
 {
     (void)pvParameters;
-    //prio = NVIC_GetPriority(DMA1_Channel4_IRQn);
     char *tx_buffer;
     for (;;)
-    {   
+    {
         // 1. 等待队列数据
         if (xQueueReceive(xTxQueue, &tx_buffer, portMAX_DELAY) != pdPASS)
             continue;
-      
+
         // 2. 启动 DMA 发送
-        if (HAL_UART_Transmit_DMA(&huart1, (uint8_t*)tx_buffer, strlen(tx_buffer)) != HAL_OK)
+        if (HAL_UART_Transmit_DMA(&huart2, (uint8_t*)tx_buffer, strlen(tx_buffer)) != HAL_OK)
         {
             // 发送启动失败，释放内存并继续
             vPortFree(tx_buffer);
@@ -70,9 +67,8 @@ static void vUSART1_TxGateKeeperTask(void *pvParameters)
 }
 
 // ======================== 对外打印接口 ========================
-void App_USART1_Printf(const char *fmt, ...)
+void App_USART2_Printf(const char *fmt, ...)
 {
-    //prio = NVIC_GetPriority(DMA1_Channel4_IRQn);
     va_list args;
     char *buf = NULL;
     int need_len;
@@ -94,7 +90,7 @@ void App_USART1_Printf(const char *fmt, ...)
     va_start(args, fmt);
     vsnprintf(buf, need_len + 1, fmt, args);
     va_end(args);
-    // prio = NVIC_GetPriority(DMA1_Channel4_IRQn);
+
     // 4. 入队
     if (xQueueSend(xTxQueue, &buf, portMAX_DELAY) != pdPASS)
     {
@@ -103,7 +99,7 @@ void App_USART1_Printf(const char *fmt, ...)
 }
 
 // ======================== 初始化函数 ========================
-void App_USART1_Init(void)
+void App_USART2_Init(void)
 {
     // 1. 创建发送队列
     xTxQueue = xQueueCreate(TX_QUEUE_LEN, sizeof(char *));
@@ -114,10 +110,8 @@ void App_USART1_Init(void)
     configASSERT(xTxDmaSem != NULL);
 
     // 3. 创建守门员任务
-    configASSERT(xTaskCreate(vUSART1_TxGateKeeperTask, "UART1_TX", 256, NULL, 2, &usart1) == pdPASS);
+    configASSERT(xTaskCreate(vUSART2_TxGateKeeperTask, "UART2_TX", 256, NULL, 2, &usart2) == pdPASS);
 
     // 4. 使能 DMA 中断（此时信号量和队列已就绪）
-    HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
-
-     //prio = NVIC_GetPriority(DMA1_Channel4_IRQn);
+    HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 }

@@ -7,17 +7,16 @@
 #include <stdio.h>
 #include "app_control.h"
 #include "FreeRTOS.h"
-#include "queue.h"
+#include "semphr.h"
 #include "task.h"
 #define MAX_leng 64
 static volatile char directIntBuf[MAX_leng];
 static volatile char proBuf[MAX_leng];//目的
 
-/* 用于 HAL_UART_Receive_IT 的接收字节变量 */
-static uint8_t rcRxByte;
-static uint8_t  ucActic =0;//这是标志说明它可以活动接受,如0 说明是directIntBu可动
-static uint8_t ucready =1;//说明接受完成在处理  不可用他接受如0 说明是directIntBu不可动，在处理
-static uint16_t intBufCursor = 0;
+/* DMA 接收：USART3 通过 DMA1_Channel3 + 空闲中断，整行收进 activeBuf */
+static uint8_t  ucActic =0; // 0：当前写入 directIntBuf；1：当前写入 proBuf
+static uint8_t  ucready =1; // 1：proBuf 就绪；0：directIntBuf 就绪（ISR 里切换）
+static SemaphoreHandle_t xLineReady = NULL; // 二值信号量：通知解析任务有完整一行
 
 static void str_to_lower(char *str) {
     while (*str) {
@@ -27,58 +26,60 @@ static void str_to_lower(char *str) {
         str++;
     }
 }
-static QueueHandle_t xMessage =NULL;
 
 void App_RC_Init(void){
-    xMessage=xQueueCreate(20,sizeof(char));
-    HAL_UART_Receive_IT(&huart3,&rcRxByte,1);
+    xLineReady = xSemaphoreCreateBinary();
+    /* 用 DMA + 空闲中断收变长行，一次武装，空闲即回调整行 */
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart3, (uint8_t*)directIntBuf, MAX_leng);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-    if (huart == &huart3) {
-        BaseType_t xhwoken = pdFALSE;
-        xQueueSendFromISR(xMessage,&rcRxByte,&xhwoken);
-        portYIELD_FROM_ISR(xhwoken);
-        HAL_UART_Receive_IT(&huart3,&rcRxByte,1);
-    }
+/* 空闲(或收满)回调：整行已落入 activeBuf，交换缓冲并通知解析任务 */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
+    if (huart != &huart3) return;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    char* active = (ucActic == 0)? (char*)directIntBuf : (char*)proBuf;
+    if (Size >= MAX_leng) Size = MAX_leng - 1;
+    active[Size] = '\0';
+    if (Size > 0 && active[Size-1] == '\r') active[Size-1] = '\0'; // 去 \r\n 的 \r
+
+    /* 交换：下次写到另一缓冲 */
+    ucActic ^= 1;
+    ucready ^= 1;
+    char* next = (ucActic == 0)? (char*)directIntBuf : (char*)proBuf;
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart3, (uint8_t*)next, MAX_leng);
+
+    xSemaphoreGiveFromISR(xLineReady, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-/* 遥控接收任务：从队列逐字节取出，攒成一行后解析
-   注意 curBuf 必须在每次循环里用 ucActic 重新选，
-   不能用上一次循环残留的局部变量（auto 变量每次循环都是新的） */
+/* 遥控接收任务：等一行就绪，解析 */
 void APP_rc_rxTask(void *argument){
     (void)argument;
     for (;;) {
-        uint8_t ucdat ;
-        xQueueReceive(xMessage,&ucdat,portMAX_DELAY);
-
-        char* curBuf = (ucActic == 0) ? directIntBuf : proBuf;
-
-        if (ucdat!='\n') {
-            if (intBufCursor < (MAX_leng-1)) {
-                curBuf[intBufCursor] = ucdat;
-                intBufCursor++;
-            }else {
-                intBufCursor = 0;   // 一行超长，简单归零
-            }
-        }else {
-            curBuf[intBufCursor] = '\0';   // 收完一行补结尾
-            intBufCursor = 0;
-            ucActic = ucActic ^1;   // 切换写入 buffer
-            ucready = ucready^1;    // 标记刚写完的 buffer 就绪
-            App_RC_Proc();          // 只在收完一行后解析一次
-        }
+        xSemaphoreTake(xLineReady, portMAX_DELAY);
+        App_RC_Proc();
     }
 }
 
 void App_RC_Proc(void){
+        char line[MAX_leng];                      /* 修复新增：本地拷贝缓冲 */
         char * Pdatas;
         if (ucready == 0) {
-             Pdatas = directIntBuf;
+             Pdatas = (char*)directIntBuf;
         }
         else {
-            Pdatas = proBuf;
+             Pdatas = (char*)proBuf;
         }
+        /* 修复：修复前任务直接解析共享缓冲，ISR 下一帧回调可能覆盖正在读的块，
+           造成读撕裂/丢行。修复后先整体拷到本地 line。
+           用临界区包住 64 字节拷贝（约 1µs，对中断影响可忽略），
+           确保 strncpy 期间 ISR 无法翻转入料缓冲，彻底封死竞态窗口。 */
+        taskENTER_CRITICAL();
+        strncpy(line, (const char*)Pdatas, MAX_leng - 1);
+        line[MAX_leng - 1] = '\0';
+        taskEXIT_CRITICAL();
+        Pdatas = line;
         str_to_lower( Pdatas);
         if(strncmp(Pdatas, "move ", 5)==0) {
             int turnSpeed, moveSpeed;

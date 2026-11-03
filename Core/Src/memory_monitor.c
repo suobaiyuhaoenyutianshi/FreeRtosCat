@@ -1,7 +1,7 @@
 #include "memory_monitor.h"
 #include "portmacro.h"
 #include "main.h"
-#include "app_usart1_dma.h"
+#include "app_usart2_dma.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <sys/_types.h>
@@ -21,7 +21,7 @@ void vRegisterTaskForMonitoring( TaskHandle_t xTask ){
         xMonitoredTaskHandles[ucMonitoredTaskCount] =xTask;
         ucMonitoredTaskCount++;
     }else {
-        App_USART1_Printf( "Warning: Cannot register more tasks for monitoring (max %d)\n",
+        App_USART2_Printf( "Warning: Cannot register more tasks for monitoring (max %d)\n",
                 MAX_MONITORED_TASKS );
     }
     
@@ -51,20 +51,20 @@ static void prvMemoryMonitorTask( void * pvParameters )
                              ( xUsedHeap - xInitialUsedHeap ) : 0;
 
         // 输出堆信息
-        App_USART1_Printf( "\n========== Memory Monitor ==========\n" );
-        App_USART1_Printf( "Heap:\n" );
-        App_USART1_Printf( "  Total       : %u bytes\n", ( unsigned ) configTOTAL_HEAP_SIZE );
-        App_USART1_Printf( "  Free now    : %u bytes\n", ( unsigned ) xFreeHeapNow );
-        App_USART1_Printf( "  Min ever    : %u bytes\n", ( unsigned ) xMinEverFreeHeap );
-        App_USART1_Printf( "  Used now    : %u bytes\n", ( unsigned ) xUsedHeap );
-        App_USART1_Printf( "  Growth      : %u bytes\n", ( unsigned ) xHeapGrowth );
+        App_USART2_Printf( "\n========== Memory Monitor ==========\n" );
+        App_USART2_Printf( "Heap:\n" );
+        App_USART2_Printf( "  Total       : %u bytes\n", ( unsigned ) configTOTAL_HEAP_SIZE );
+        App_USART2_Printf( "  Free now    : %u bytes\n", ( unsigned ) xFreeHeapNow );
+        App_USART2_Printf( "  Min ever    : %u bytes\n", ( unsigned ) xMinEverFreeHeap );
+        App_USART2_Printf( "  Used now    : %u bytes\n", ( unsigned ) xUsedHeap );
+        App_USART2_Printf( "  Growth      : %u bytes\n", ( unsigned ) xHeapGrowth );
 
         // 输出任务栈信息
-        App_USART1_Printf( "Task Stacks (High Water Mark = min free ever):\n" );
+        App_USART2_Printf( "Task Stacks (High Water Mark = min free ever):\n" );
         if( ucMonitoredTaskCount == 0 )
         {
             
-            App_USART1_Printf( "  No tasks registered.\n" );
+            App_USART2_Printf( "  No tasks registered.\n" );
         }
         else
         {
@@ -73,12 +73,12 @@ static void prvMemoryMonitorTask( void * pvParameters )
                 TaskHandle_t xTask = xMonitoredTaskHandles[i];
                 if( xTask == NULL )
                 {
-                    App_USART1_Printf( "  [Invalid handle] : skipped\n" );
+                    App_USART2_Printf( "  [Invalid handle] : skipped\n" );
                     continue;
                 }
                 const char* pcTaskName = pcTaskGetName(xTask);
                 UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark( xTask );
-                App_USART1_Printf( "  %-12s : min free %u words (%u bytes)\n",
+                App_USART2_Printf( "  %-12s : min free %u words (%u bytes)\n",
                    pcTaskName,
                    ( unsigned ) uxHighWaterMark,
                    ( unsigned ) uxHighWaterMark * sizeof(StackType_t) );
@@ -86,9 +86,9 @@ static void prvMemoryMonitorTask( void * pvParameters )
         }
 
         UBaseType_t uxMonitorTaskHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
-        App_USART1_Printf( "  %-12s : min free %u word (monitor itself)\n",
+        App_USART2_Printf( "  %-12s : min free %u word (monitor itself)\n",
                            "MemMon", ( unsigned ) uxMonitorTaskHighWaterMark );
-        App_USART1_Printf( "=====================================\n\n" );
+        App_USART2_Printf( "=====================================\n\n" );
 
         // 延时，控制输出频率
         vTaskDelay( pdMS_TO_TICKS( MONITOR_INTERVAL_MS ) );
