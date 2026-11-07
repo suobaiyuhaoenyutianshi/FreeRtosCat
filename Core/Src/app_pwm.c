@@ -2,14 +2,15 @@
 #include "main.h"
 #include "math.h"
 
-#include "app_pwm.h"
-#include "math.h"
-
-#include "app_pwm.h"
-#include "main.h"
-#include "math.h"
-
+/*
+ * 占空比标度（全工程唯一约定）：
+ *   App_PWM_Set_L/R 的入参是【归一化占空比】，范围 -1.0 ~ +1.0，符号表示方向，1.0 = 100%。
+ *   直接对接 app_motor.c 的 duty = vol_l / totalBatVol（0~1）。
+ *   禁止再传百分数（例如传 50 表示 50%），否则会被钳位成 100%。
+ */
 #define PWM_ARR 99  // 必须和 CubeMX 里 TIM1/TIM4 的 ARR 一致
+#define PWM_DUTY_MAX 1.0f
+#define PWM_CCR_MAX  (PWM_ARR + 1)   /* 满占空比对应的 CCR：100 > ARR=99 → 恒高 */
 
 /*
  * 引脚功能说明
@@ -17,12 +18,6 @@
  * 右电机：PB5=BIN1, PB7=BIN2, PB6=TIM4_CH1(PWM)
  * STBY：PA1（高电平使能）
  **/
-
-#include "app_pwm.h"
-#include "main.h"
-#include "math.h"
-
-#define PWM_ARR 99
 
 void App_PWM_Init(void)
 {
@@ -43,9 +38,8 @@ void App_PWM_Cmd(uint8_t State)
  */
 void App_PWM_Set_L(float Duty)
 {
-    if (Duty > 100.0f)  Duty = 100.0f;
-    if (Duty < -100.0f) Duty = -100.0f;
-
+    if (Duty > PWM_DUTY_MAX)  Duty = PWM_DUTY_MAX;
+    if (Duty < -PWM_DUTY_MAX) Duty = -PWM_DUTY_MAX;
     if (Duty >= 0)
     {
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9,  GPIO_PIN_RESET); // AIN1 低
@@ -56,7 +50,7 @@ void App_PWM_Set_L(float Duty)
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9,  GPIO_PIN_SET);   // AIN1 高
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET); // AIN2 低
     }
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)(fabsf(Duty)/100.0f * (PWM_ARR+1)));
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)(fabsf(Duty) * PWM_CCR_MAX));
 }
 
 /*
@@ -66,8 +60,8 @@ void App_PWM_Set_L(float Duty)
  */
 void App_PWM_Set_R(float Duty)
 {
-    if (Duty > 100.0f)  Duty = 100.0f;
-    if (Duty < -100.0f) Duty = -100.0f;
+    if (Duty > PWM_DUTY_MAX)  Duty = PWM_DUTY_MAX;
+    if (Duty < -PWM_DUTY_MAX) Duty = -PWM_DUTY_MAX;
 
     if (Duty >= 0)
     {
@@ -79,5 +73,6 @@ void App_PWM_Set_R(float Duty)
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET); // BIN1 低
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);   // BIN2 高
     }
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (uint16_t)(fabsf(Duty)/100.0f * (PWM_ARR+1)));
+    
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (uint16_t)(fabsf(Duty) * PWM_CCR_MAX));
 }
