@@ -4,6 +4,7 @@
 
 
 void App_RC_Init(void);
+void App_RC_ISR(void);
 void App_RC_Proc(void);
 void APP_rc_rxTask(void *argument);
 

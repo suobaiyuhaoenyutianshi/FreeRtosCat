@@ -36,6 +36,7 @@
 #include "stm32f1xx_hal_uart.h"
 #include <stdint.h>
 #include <sys/_types.h>
+#include "app_usart2_dma.h"
 
 /* USER CODE END Includes */
 
@@ -67,6 +68,8 @@ ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 
+IWDG_HandleTypeDef hiwdg;
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
@@ -78,6 +81,9 @@ DMA_HandleTypeDef hdma_usart3_rx;
 
 /* USER CODE BEGIN PV */
 TaskHandle_t mot;
+/* 诊断容器定义（类型在 main.h 的 diag_ctx_t）：
+   TIM2 中断次数、中断屏蔽状态、I2C 返回值全部在这里，Watch 里展开 g_diag 即可 */
+volatile diag_ctx_t g_diag = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,12 +97,14 @@ static void MX_TIM4_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_IWDG_Init(void);
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
   float AAP;
+  volatile uint32_t ssda = 0;   /* 调试面包屑：volatile 保证每次都真写内存，调试器里能看到变化 */
   volatile float test_var = 3.14f; 
 /* USER CODE END 0 */
 
@@ -139,16 +147,66 @@ int s =1;
   MX_USART2_UART_Init();
   MX_TIM3_Init();
   MX_USART3_UART_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
+  /* ---- 调试标记：阻塞式直接发串口，绕过 FreeRTOS 队列/DMA 打印链路 ----
+     看到 "B1" 说明 MCU 已经跑到这里，且 USART2 硬件通路正常 */
+  HAL_UART_Transmit(&huart2, (uint8_t *)"B1\r\n", 4, 50);
+#define BOOT_STEP(c)  do { uint8_t _c = (uint8_t)(c); HAL_UART_Transmit(&huart2, &_c, 1, 20); } while (0)
+  /* 调试断点时暂停 IWDG 计数，否则 CPU 一停就被复位（仅连接调试器时生效） */
+  __HAL_DBGMCU_FREEZE_IWDG();
+
+  /* ---- 中断优先级统一编排（所有 MX_*_Init 之后执行，覆盖它们设的值）----
+   * 数字越小优先级越高；ISR 里要调 FreeRTOS FromISR 接口的，数值必须 >= 5。
+   *   TIM2(HAL 1ms 时基) = 5：回调里会 vTaskNotifyGiveFromISR
+   *   USART3(蓝牙逐字节)  = 5：回调里会 xSemaphoreGiveFromISR
+   *   EXTI(编码器)/ADC/TIM1/TIM3/TIM4 = 6：高频中断，不能压过上面两个，否则 tick 被饿死
+   */
+  HAL_NVIC_SetPriority(TIM2_IRQn,        5U, 0U);
+  HAL_NVIC_SetPriority(USART3_IRQn,      5U, 0U);
+  HAL_NVIC_SetPriority(EXTI3_IRQn,       6U, 0U);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn,   6U, 0U);
+  HAL_NVIC_SetPriority(ADC1_2_IRQn,      6U, 0U);
+  HAL_NVIC_SetPriority(TIM1_BRK_IRQn,    6U, 0U);
+  HAL_NVIC_SetPriority(TIM1_UP_IRQn,     6U, 0U);
+  HAL_NVIC_SetPriority(TIM1_TRG_COM_IRQn,6U, 0U);
+  HAL_NVIC_SetPriority(TIM1_CC_IRQn,     6U, 0U);
+  HAL_NVIC_SetPriority(TIM3_IRQn,        6U, 0U);
+  HAL_NVIC_SetPriority(TIM4_IRQn,        6U, 0U);
   Delay_Init();//别删这个
+  BOOT_STEP('1');
   App_PWM_Init();
+  BOOT_STEP('2');
+
+  /* ---- 开环电机测试：紧跟 App_PWM_Init，排除后面初始化卡死的影响 ---- */
+  // App_PWM_Set_L(0.5f);           /* 50%，架空车轮看方向；15% 可能低于启动转矩 */
+  // App_PWM_Set_R(0.5f);
+  // while (1)
+  // {
+  //   ssda++;                      /* 调试器里能涨 = 代码确实跑到这里了 */
+  //   HAL_IWDG_Refresh(&hiwdg);    /* 必须喂，否则 0.41s 后复位 */
+  //   HAL_Delay(50);
+  // }
+
   APP_batInit();
+  BOOT_STEP('3');
   App_Encoder_Init();
+  BOOT_STEP('4');
   App_RC_Init();
+  BOOT_STEP('5');
   App_MPU6050_Init();
+  BOOT_STEP('6');
+  /* IWDG 在 MX_IWDG_Init 就已启动，但此时调度器还没起、没任务喂狗；
+     初始化里耗时的 HAL_Delay(100) 之后补喂一次，避免初始化期间被复位 */
+  HAL_IWDG_Refresh(&hiwdg);
+  BOOT_STEP('7');
   App_Control_Init();
+  BOOT_STEP('8');
   App_Motor_Init();
+  BOOT_STEP('9');
   App_USART2_Init();
+  BOOT_STEP('A');
+
   TaskHandle_t att;TaskHandle_t ctrl;TaskHandle_t rc;
   
   /* 创建控制任务：栈 384 字，优先级 4，周期 5ms。
@@ -160,15 +218,22 @@ int s =1;
   xTaskCreate(App_Attitude_Task, "att", 256, ctrl, 3, &att);
 
   xTaskCreate( App_Motor_Proc,"motor",128,NULL,5,&mot);
-  /* 创建遥控接收任务：栈 256 字，优先级 2 */
-  xTaskCreate(APP_rc_rxTask, "rc", 256, NULL, 2, &rc);
+  /* 创建遥控接收任务：栈 512 字（2048B）。
+     原 256 字（1KB）不够：App_RC_Proc 里跑 newlib 的 sscanf + vsnprintf，
+     实测爆栈（vApplicationStackOverflowHook 计数 0→1），钩子会关中断死循环，
+     再被 IWDG 复位 → 表现为"一收蓝牙数据就复位、计数永远停在 23/2"。
+     现在解析和打印已改成手写实现，512 字留足余量。 */
+  xTaskCreate(APP_rc_rxTask, "rc", 512, NULL, 2, &rc);
   vRegisterTaskForMonitoring(att);
   vRegisterTaskForMonitoring(ctrl);
   vRegisterTaskForMonitoring(rc);
   vRegisterTaskForMonitoring(mot);
+  vRegisterTaskForMonitoring(usart2);   /* UART2_TX：之前漏注册，栈降到 128 字后必须观测 */
+ 
   /* 启动内存监控任务，周期性打印各任务栈高水位 + 堆用量 */
   vStartMemoryMonitor();
   /* 启动调度器。正常情况永远不会返回 */
+  HAL_UART_Transmit(&huart2, (uint8_t *)"B2\r\n", 4, 50);   /* 看到 B2 = 所有初始化都过了 */
   vTaskStartScheduler();
 
 /*uint8_t TE[] = "holl";
@@ -184,6 +249,7 @@ HAL_UART_Transmit(&huart2,TE,strlen(TE),HAL_MAX_DELAY);
   App_PWM_Cmd(1);
   /* 走到这里说明 vTaskStartScheduler() 启动失败（多半是 FreeRTOS 堆不够，
      堆在 FreeRTOSConfig.h 的 configTOTAL_HEAP_SIZE）。 */
+  HAL_UART_Transmit(&huart2, (uint8_t *)"SCHED-FAIL\r\n", 12, 50);
   while (1)
   {
     /* USER CODE END WHILE */
@@ -206,10 +272,11 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
@@ -317,6 +384,34 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
     
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_4;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -592,8 +687,8 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOD_CLK_ENABLE();
@@ -648,22 +743,64 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 
+/* ---- 爆栈现场快照 ------------------------------------------------------------
+ * 钩子运行在 PendSV / 调度器切换上下文的临界位置，此时：
+ *   - 不能 pvPortMalloc（堆可能已被溢出踩坏）
+ *   - 不能 xQueueSend(portMAX_DELAY)（调度器正在切换，阻塞行为未定义）
+ * 所以这里只做"写全局变量 + 关中断死循环"，调试器直接看下面两个变量即可：
+ *   g_ulStackOverflowCount : 爆栈次数（不放断点也能知道有没有进过钩子）
+ *   g_cOverflowTaskName    : 爆栈的任务名
+ * 断点建议打在本函数第一行（Count++ 那行）。
+ * --------------------------------------------------------------------------- */
+volatile uint32_t g_ulStackOverflowCount = 0;
+volatile char     g_cOverflowTaskName[configMAX_TASK_NAME_LEN] = {0};
+
 /**
   * @brief  任务栈溢出钩子
   * @note   configCHECK_FOR_STACK_OVERFLOW = 2 时必须由用户提供，否则链接报错。
-  *         在这里下断点，pcTaskName 就是爆栈的那个任务。
+  *         只有任务被切出去时才会检查，深溢出可能先 HardFault 而进不到这里。
   */
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
   (void)xTask;
-  /* 打印爆栈任务名，方便定位是哪个栈爆了 */
-  App_USART2_Printf("*** STACK OVERFLOW in task: %s ***\n", pcTaskName);
+  g_ulStackOverflowCount++;
+  for (uint32_t i = 0; (i < (configMAX_TASK_NAME_LEN - 1U)) && (pcTaskName[i] != '\0'); i++)
+  {
+    g_cOverflowTaskName[i] = pcTaskName[i];
+  }
+  g_cOverflowTaskName[configMAX_TASK_NAME_LEN - 1U] = '\0';
+
+  taskDISABLE_INTERRUPTS();
+  for (;;)
+  {
+  }
+}
+
+/* ---- 堆分配失败现场 --------------------------------------------------------
+ * pvPortMalloc 返回 NULL 时由 heap_4.c 调用（configUSE_MALLOC_FAILED_HOOK=1）。
+ * 与爆栈钩子同样原则：只写全局变量 + 关中断死循环，不碰堆/队列/串口。
+ * 调试器里看：
+ *   g_ulMallocFailedCount    : 失败次数
+ *   g_ulMallocFailedFreeHeap : 失败时的剩余堆（区分"彻底没空间"还是"碎片化不够一块"）
+ *   g_pvMallocFailedCaller   : 调用 pvPortMalloc 的返回地址，
+ *                              用 arm-none-eabi-addr2line -e <elf> 0x<地址> 定位到源码行
+ * ------------------------------------------------------------------------- */
+volatile uint32_t g_ulMallocFailedCount = 0;
+volatile uint32_t g_ulMallocFailedFreeHeap = 0;
+volatile uint32_t g_pvMallocFailedCaller = 0;
+
+void vApplicationMallocFailedHook(void)
+{
+  g_ulMallocFailedFreeHeap = (uint32_t)xPortGetFreeHeapSize();
+  g_pvMallocFailedCaller = (uint32_t)__builtin_return_address(0);
+  g_ulMallocFailedCount++;
+
   taskDISABLE_INTERRUPTS();
   for (;;)
   {
@@ -684,8 +821,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
   BaseType_t xhw = pdFALSE;
+  if (htim->Instance == TIM2) { g_diag.tim2_irq_count++; }   /* 诊断：TIM2 中断计数 */
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM2) {
+  if (htim->Instance == TIM2)
+  {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
@@ -713,8 +852,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.

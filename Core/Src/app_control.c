@@ -110,6 +110,32 @@ void App_Control_Proc(void){
     pitch_rad        = a.pitch * 0.0174533f;  // 倾角 ° →rad
     pitch_rate_radps = a.gx*0.0174533f;// 角速度 °/s → rad/s
    }
+
+    /* ===== 安全停机：倾角超过 ±40° 立即切断电机 =====
+     * 倒地/被拿起后继续给轮子出力只会让车乱窜。这里直接拉低 STBY（TB6612 待机
+     * = 电机断电），并清掉轮速积分和全部 PID，避免"倒着还在继续加速"的积分残留。
+     * 回正到 ±5° 以内才恢复（滞回，防止在 40° 附近反复启停）。 */
+    static uint8_t s_pitch_stop = 0;
+    if ((pitch_rad > 0.6981f) || (pitch_rad < -0.6981f)) {
+        s_pitch_stop = 1;                            /* 40°：停机 */
+    } else if ((pitch_rad < 0.0873f) && (pitch_rad > -0.0873f)) {
+        s_pitch_stop = 0;                            /* 5°：允许恢复 */
+    }
+
+    if (s_pitch_stop) {
+        App_Motor_Cmd(0);                            /* STBY 低：电机断电 + 复位电机环 PID */
+        App_Contro_setMoveSpeed(0.0f);               /* 清掉遥控残留的速度/转向目标 */
+        App_Contro_setTurnSpeed(0.0f);
+        wheel_omega_ref_radps = 0.0f;
+        PID_Reset(&pid_speed);
+        PID_Reset(&pid_pitch);
+        PID_Reset(&pid_pitch_rate);
+        PID_Reset(&pid_yaw_rate);
+        last_calc_us = now_us;
+        return;                                      /* 不再向电机环下发目标轮速 */
+    }
+    App_Motor_Cmd(1);                                /* 正常姿态：保证 STBY 为高（重复写无害） */
+
 // ===== 3. 融合编码器与陀螺仪，计算真实水平速度 vel_body_mps (m/s) =====
     // 车轮转动速度包含两部分：车身转动导致轮子跟着转 + 真正水平移动
     // 车身以 pitch_rate_radps 角速度旋转时，轮子中心线速度 = pitch_rate_radps * (PENDULUM_LEN_M + WHEEL_RADIUS_M)
@@ -161,7 +187,7 @@ void App_Control_Proc(void){
     }
     float yaw_rate_meas_radps = a.gz*0.0174533f;
     float yaw_diff_omega   =  PID_Compute1(&pid_yaw_rate,yaw_rate_meas_radps,now_us) ;
-     // ===== 9. 将目标轮速发给电机速度环 =====
+     // 9. 将目标轮速发给电机速度环 
     App_Motor_SetOmega_L(wheel_omega_ref_radps-yaw_diff_omega);
     App_Motor_SetOmega_R(wheel_omega_ref_radps+yaw_diff_omega);
 

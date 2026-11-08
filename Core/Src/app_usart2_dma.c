@@ -91,8 +91,26 @@ void App_USART2_Printf(const char *fmt, ...)
     vsnprintf(buf, need_len + 1, fmt, args);
     va_end(args);
 
-    // 4. 入队
-    if (xQueueSend(xTxQueue, &buf, portMAX_DELAY) != pdPASS)
+    // 4. 入队（最多等 100ms；队列满就丢弃，绝不能让调用任务无限阻塞——
+    //    MemMon 是唯一喂 IWDG 的任务，它一旦卡死就是 0.41s 复位）
+    if (xQueueSend(xTxQueue, &buf, pdMS_TO_TICKS(100)) != pdPASS)
+    {
+        vPortFree(buf);
+    }
+}
+
+// ======================== 原样发送（不格式化）====================
+void App_USART2_SendRaw(const char *s)
+{
+    if (s == NULL) return;
+
+    size_t len = strlen(s);
+    char *buf = (char *)pvPortMalloc(len + 1U);
+    if (buf == NULL) return;
+
+    memcpy(buf, s, len + 1U);
+
+    if (xQueueSend(xTxQueue, &buf, pdMS_TO_TICKS(50)) != pdPASS)
     {
         vPortFree(buf);
     }
@@ -110,7 +128,8 @@ void App_USART2_Init(void)
     configASSERT(xTxDmaSem != NULL);
 
     // 3. 创建守门员任务
-    configASSERT(xTaskCreate(vUSART2_TxGateKeeperTask, "UART2_TX", 256, NULL, 2, &usart2) == pdPASS);
+    /* 栈只用到 strlen + HAL_UART_Transmit_DMA，128 字（512B）足够；高水位由 memory_monitor 观测 */
+    configASSERT(xTaskCreate(vUSART2_TxGateKeeperTask, "UART2_TX", 128, NULL, 2, &usart2) == pdPASS);
 
     // 4. 使能 DMA 中断（此时信号量和队列已就绪）
     HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);

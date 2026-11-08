@@ -215,7 +215,8 @@
  * FreeRTOS/source/timers.c source file must be included in the build if
  * configUSE_TIMERS is set to 1.  Default to 0 if left undefined.  See
  * https://www.freertos.org/RTOS-software-timer.html. */
-#define configUSE_TIMERS                1
+/* 本工程未使用任何 xTimer* API，关掉可省下定时器任务（128 字栈 + TCB + 定时器队列） */
+#define configUSE_TIMERS                0
 
 /* configTIMER_TASK_PRIORITY sets the priority used by the timer task.  Only
  * used if configUSE_TIMERS is set to 1.  The timer task is a standard FreeRTOS
@@ -281,15 +282,19 @@
  * it must be tailored to each application.  Note the heap will appear in the .bss
  * section.  See https://www.freertos.org/a00111.html. */
 /* 本工程堆总账（heap_4，portBYTE_ALIGNMENT=8，每次分配另加 8B 块头再按 8B 对齐）：
- *   6 个动态任务（UART2_TX 256 / ctrl 384 / att 256 / motor 128 / rc 256 / MemMon 256 字）：
+ *   6 个动态任务（UART2_TX 128 / ctrl 384 / att 256 / motor 128 / rc 512 / MemMon 256 字）：
  *     栈 6144B + 块头 6*8B + TCB 6*96B(84B 结构 + 8B 块头对齐到 96B) = 6768B
+ *   （rc 任务由 256 字加到 512 字：原 1KB 栈跑 sscanf + vsnprintf 会爆栈，
+ *     爆栈钩子关中断死循环，进而被 IWDG 复位。解析/打印已改成手写实现，
+ *     512 字留余量；堆同步从 7680 加到 9728）
  *   2 个队列（各 20B 存储：姿态邮箱 1*20B、打印队列 5*4B）+ 2 个二值信号量：
  *     104 + 104 + 80 + 80 = 368B（Queue_t sizeof=72B）
- *   常驻合计 7136B；heap_4 末端 pxEnd 占 8B，静态余量约 536B。
+ *   常驻合计 7136B；heap_4 末端 pxEnd 占 8B，静态余量约 2580B。
  *   打印缓冲为动态临时分配：队列 5 份 + DMA 在发 1 份，最多 6 份并存
- *   （单份上限 272B，监控输出单行约 56B），预留后余量约 200B。
- *   Idle/Timer 任务栈由内核静态内存提供（configKERNEL_PROVIDED_STATIC_MEMORY=1），不占堆。 */
-#define configTOTAL_HEAP_SIZE                        ( 7680 )
+ *   （单份上限 272B，监控输出单行约 56B），预留后余量约 900B。
+ *   Idle 任务栈由内核静态内存提供（configKERNEL_PROVIDED_STATIC_MEMORY=1），不占堆；
+ *   定时器任务已随 configUSE_TIMERS=0 关闭。 */
+#define configTOTAL_HEAP_SIZE                        ( 9728 )
 
 /* Set configAPPLICATION_ALLOCATED_HEAP to 1 to have the application allocate
  * the array used as the FreeRTOS heap.  Set to 0 to have the linker allocate the
@@ -337,7 +342,9 @@
  * for any set to 1.  See https://www.freertos.org/a00016.html. */
 #define configUSE_IDLE_HOOK                   0
 #define configUSE_TICK_HOOK                   0
-#define configUSE_MALLOC_FAILED_HOOK          0
+/* 打开后 pvPortMalloc 失败会调用 vApplicationMallocFailedHook()（在 main.c 里实现），
+ * 否则分配失败只是静默返回 NULL */
+#define configUSE_MALLOC_FAILED_HOOK          1
 #define configUSE_DAEMON_TASK_STARTUP_HOOK    0
 
 /* Set configUSE_SB_COMPLETED_CALLBACK to 1 to have send and receive completed
@@ -613,7 +620,7 @@
 #define INCLUDE_xTaskGetIdleTaskHandle         0
 #define INCLUDE_eTaskGetState                  0
 #define INCLUDE_xEventGroupSetBitFromISR       1
-#define INCLUDE_xTimerPendFunctionCall         1
+#define INCLUDE_xTimerPendFunctionCall         0   /* configUSE_TIMERS=0，必须一起关，否则 timers.c 编译报错 */
 #define INCLUDE_xTaskAbortDelay                0
 #define INCLUDE_xTaskGetHandle                 0
 #define INCLUDE_xTaskResumeFromISR             1
