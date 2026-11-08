@@ -27,7 +27,6 @@
 #include "core_cm3.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "app_rc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -434,12 +433,8 @@ void USART2_IRQHandler(void)
 void USART3_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_IRQn 0 */
-  /* 蓝牙接收：直接读 DR，绕过 HAL 的接收状态机（原因见 app_rc.c 的 App_RC_Init）。
-     USART3 上只有这一个中断源，处理完直接返回，不让 HAL_UART_IRQHandler 再碰
-     状态机——否则它一旦看到 ORE，会执行 UART_EndRxTransfer() 把 RXNEIE 关掉，
-     接收永久停摆。以后若要给 USART3 加中断发送，需要在这里补 TC 处理。 */
-  App_RC_ISR();
-  return;
+  /* 蓝牙改用 DMA + 空闲中断接收：IDLE/TC/错误事件统一交给 HAL_UART_IRQHandler，
+     整帧的回落逻辑在 app_rc.c 的 HAL_UARTEx_RxEventCallback / HAL_UART_ErrorCallback。 */
   /* USER CODE END USART3_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
   /* USER CODE BEGIN USART3_IRQn 1 */

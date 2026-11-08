@@ -7,16 +7,25 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "task.h"
-#include "app_usart2_dma.h"   /* 调试时把收到的蓝牙原始行打印到 USART2 */
-#define RC_DEBUG_PRINT 1      /* 1=打印收到的每一行；确认蓝牙通了以后改成 0 */
+#include "app_usart2_dma.h"   /* 调试时把收到的蓝牙原始帧打印到 USART2 */
+#define RC_DEBUG_PRINT 1      /* 1=打印收到的每一帧；确认蓝牙通了以后改成 0 */
 
 #define MAX_leng 64
-/* 与老工程 CARTEST 一致：逐字节中断接收，累计到 '\n' 视为一行结束。
- * 老工程在同一块板子上验证可用；DMA+空闲中断那套在当前工程没有收到数据。 */
-static volatile char directIntBuf[MAX_leng];   /* 正在拼的行 */
-static volatile char proBuf[MAX_leng];         /* 拼完的行，交给任务 */
-static uint16_t intBufCursor = 0;
-static SemaphoreHandle_t xLineReady = NULL;    /* 二值信号量：通知解析任务有完整一行 */
+
+/* DMA + 空闲中断 + 双缓冲：
+ *   s_dma_buf[0]/[1] 由 DMA1_Channel3 交替写入；
+ *   s_ready_buf 只由 CPU 读写——ISR 把刚收完的帧拷进来，任务从这里取。
+ * 这样即使任务拷贝期间 ISR 又完成一帧并重装 DMA，DMA 也只会写到 s_dma_buf，
+ * 不会踩到任务正在读的 s_ready_buf（临界区只能挡 CPU 中断，挡不住 DMA 写内存）。
+ * 出错（FE/NE/ORE）由 HAL_UART_ErrorCallback 丢弃当前帧并重新武装。 */
+static uint8_t  s_dma_buf[2][MAX_leng];
+static volatile char s_ready_buf[MAX_leng];
+static uint8_t  s_dma_idx = 0;
+static SemaphoreHandle_t xLineReady = NULL;    /* 二值信号量：通知解析任务有完整一帧 */
+
+volatile uint16_t testrc = 0;        /* 诊断：收到的字节数（按帧累加） */
+volatile uint16_t testRcErr = 0;     /* 诊断：FE/NE/ORE 触发重新武装的次数 */
+volatile uint16_t testRcrEecip = 0;  /* 诊断：交给任务的帧数 */
 
 static void str_to_lower(char *str) {
     while (*str) {
@@ -29,58 +38,67 @@ static void str_to_lower(char *str) {
 
 void App_RC_Init(void){
     xLineReady = xSemaphoreCreateBinary();
-    /* 与老工程 CARTEST（标准库版）一致：只开 RXNE 中断，中断里直接读 DR。
-     * 不用 HAL_UART_Receive_IT：HAL 带接收状态机，一旦发生 ORE 溢出，
-     * HAL_UART_IRQHandler 会调用 UART_EndRxTransfer() 把 RXNE/PE/ERR 中断
-     * 全部关掉，而且不会自动重新武装（我们也没实现 HAL_UART_ErrorCallback），
-     * 接收就此永久停摆。直接读 DR 没有状态机，ORE 只丢一个字节，接收继续。 */
-    __HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
+    s_dma_idx = 0;
+    /* 启动 DMA + 空闲中断接收。返回值必须检查：启动瞬间若有挂起错误，
+       HAL 会返回 HAL_ERROR 并把 ReceptionType 复位成 STANDARD，
+       之后永远不会进 HAL_UARTEx_RxEventCallback。 */
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_dma_buf[s_dma_idx], MAX_leng) != HAL_OK)
+    {
+        s_dma_idx ^= 1U;
+        (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_dma_buf[s_dma_idx], MAX_leng);
+    }
 }
 
-/* 只在 USART3_IRQHandler 里调用（中断上下文），对应老工程的 USART3_IRQHandler。
-   USART3 中断优先级在 main.c 里统一设为 5，
-   满足 >= configMAX_SYSCALL_INTERRUPT_PRIORITY(5) 才能调 FromISR 接口。 */
-volatile uint16_t testrc =0;
-void App_RC_ISR(void)
+/* 空闲(或收满)回调：整帧已落入 s_dma_buf[s_dma_idx]，拷到成品缓冲后换缓冲重新武装。 */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-    /* 先读 SR 再读 DR：这一对读操作同时清掉 RXNE 和 ORE（溢出）标志 */
-    if (__HAL_UART_GET_FLAG(&huart3, UART_FLAG_RXNE) == RESET) return;
+    if (huart != &huart3) return;
+
+    /* DMA_NORMAL 下“半传输”事件不是帧结束（只收到 32 字节），直接忽略 */
+    if (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT) return;
 
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    uint8_t DATA = (uint8_t)(huart3.Instance->DR & 0xFFU);
 
-    if ((DATA != '\n') && (DATA != '\r'))
+    if (Size > (MAX_leng - 1U)) Size = (MAX_leng - 1U);   /* 收满 64 时截到 63 */
+
+    /* 拷到成品缓冲（DMA 不会写这块内存） */
+    for (uint16_t i = 0U; i < Size; i++)
     {
-        if (intBufCursor < (MAX_leng - 1U))
-        {
-            directIntBuf[intBufCursor] = (char)DATA;
-            intBufCursor++;
-        }
-        else
-        {
-            intBufCursor = 0;   /* 超长丢弃，重新开始拼 */
-        }
+        s_ready_buf[i] = (char)s_dma_buf[s_dma_idx][i];
     }
-    else if (intBufCursor > 0U)
+    /* 去掉行尾的 \r / \n */
+    while ((Size > 0U) &&
+           ((s_ready_buf[Size - 1U] == '\r') || (s_ready_buf[Size - 1U] == '\n')))
     {
-        directIntBuf[intBufCursor] = '\0';
-        /* 整行拷到 proBuf（覆盖上一行），通知任务 */
-        for (uint16_t i = 0U; i <= intBufCursor; i++)
-        {
-            proBuf[i] = directIntBuf[i];
-        }
-        intBufCursor = 0;
+        Size--;
+    }
+    s_ready_buf[Size] = '\0';
 
+    /* 换另一块 DMA 缓冲重新武装；这一步失败就丢弃本帧，不在这里重试 */
+    s_dma_idx ^= 1U;
+    (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_dma_buf[s_dma_idx], MAX_leng);
+
+    testrc += Size;
+
+    if (Size > 0U)
+    {
         xSemaphoreGiveFromISR(xLineReady, &xHigherPriorityTaskWoken);
     }
-
-    /* 不需要重新武装：RXNEIE 一直保持使能，下一个字节到了会再次进中断 */
-    testrc++;
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-volatile uint16_t  testRcrEecip =0;
-/* 遥控接收任务：等一行就绪，解析 */
+/* DMA 模式下 HAL 把 FE/NE/ORE 任何一个都当致命错误：UART_EndRxTransfer 会关掉
+   IDLEIE/EIE 并中止 DMA，然后调用这里。当前帧直接丢弃、重新武装即可，
+   丢一帧对遥控没有影响（下一次空闲又会有新帧）。 */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart != &huart3) return;
+
+    testRcErr++;
+    (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_dma_buf[s_dma_idx], MAX_leng);
+}
+
+/* 遥控接收任务：等一帧就绪，解析 */
 void APP_rc_rxTask(void *argument){
     (void)argument;
     for (;;) {
@@ -91,7 +109,7 @@ void APP_rc_rxTask(void *argument){
 }
 
 /* 不用 sscanf：newlib 的 scanf 一族在 -O0 下要几百字节栈，叠加 vsnprintf
-   会把 1KB 的 rc 任务栈撑爆（爆栈钩子关中断死循环 + IWDG 复位）。
+   会把 rc 任务栈撑爆（爆栈钩子关中断死循环 + IWDG 复位）。
    这里手写"跳过空格 + 可选符号 + 十进制整数"的解析，栈开销几十字节。 */
 static int rc_parse_int(const char **pp, int *out)
 {
@@ -117,7 +135,7 @@ static int rc_parse_int(const char **pp, int *out)
 }
 
 #if RC_DEBUG_PRINT
-/* 同理不用 vsnprintf（%s 在 -O0 下同样吃栈），手动拼 "RC<- [<line>]\n" */
+/* 同理不用 vsnprintf（%s 在 -O0 下同样吃栈），手动拼 "RC<- [<frame>]\n" */
 static void rc_debug_print(const char *line)
 {
     char tmp[MAX_leng + 10];
@@ -136,16 +154,16 @@ static void rc_debug_print(const char *line)
 
 void App_RC_Proc(void){
         char line[MAX_leng];
-        /* 临界区拷贝：ISR 下一行到达时会覆盖 proBuf，先整体搬走再解析，
-           避免读到"半新半旧"的数据 */
+        /* 临界区拷贝：ISR 下一帧到达时会覆盖 s_ready_buf，先整体搬走再解析，
+           避免读到"半新半旧"的数据（s_ready_buf 只有 CPU 读写，临界区足够） */
         taskENTER_CRITICAL();
-        strncpy(line, (const char*)proBuf, MAX_leng - 1);
+        strncpy(line, (const char*)s_ready_buf, MAX_leng - 1);
         line[MAX_leng - 1] = '\0';
         taskEXIT_CRITICAL();
 
         str_to_lower(line);
 #if RC_DEBUG_PRINT
-        /* 收到任何一行都打印出来：如果这里一直没输出，说明蓝牙/接线/波特率有问题，
+        /* 收到任何一帧都打印出来：如果这里一直没输出，说明蓝牙/接线/波特率有问题，
            而不是解析问题 */
         rc_debug_print(line);
 #endif
