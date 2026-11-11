@@ -30,6 +30,12 @@
 #ifndef PORTMACRO_H
 #define PORTMACRO_H
 
+/* 本文件依赖 FreeRTOS.h 的包含顺序（先 stdint / projdefs），
+ * 补上这几个头后即可独立解析，编辑器单独打开时不再报未定义类型。 */
+#include <stdint.h>
+#include "FreeRTOSConfig.h"
+#include "projdefs.h"
+
 /* *INDENT-OFF* */
 #ifdef __cplusplus
     extern "C" {

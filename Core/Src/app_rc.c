@@ -56,7 +56,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 
     /* DMA_NORMAL 下“半传输”事件不是帧结束（只收到 32 字节），直接忽略 */
     if (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT) return;
-
+    
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
     if (Size > (MAX_leng - 1U)) Size = (MAX_leng - 1U);   /* 收满 64 时截到 63 */
@@ -171,8 +171,7 @@ void App_RC_Proc(void){
             int turnSpeed, moveSpeed;
             const char *p = line + 5;
             if (rc_parse_int(&p, &turnSpeed) && rc_parse_int(&p, &moveSpeed)) {
-                /* 和参考工程一致：满量程 ±100 对应 0.7 m/s / 15 rad/s。
-                   先限幅，避免一条异常报文把目标值顶到天上 */
+                
                 if (turnSpeed >  100) turnSpeed =  100;
                 if (turnSpeed < -100) turnSpeed = -100;
                 if (moveSpeed >  100) moveSpeed =  100;

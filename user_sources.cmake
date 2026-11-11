@@ -4,6 +4,12 @@ file(GLOB_RECURSE USER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/freeRTOS/Src/*.c"
 )
 
+# system_stm32f1xx.c 已由 CubeMX 生成的 STM32_Drivers 目标编译，
+# 这里必须排除，否则两个目标各编一份，链接报 multiple definition
+list(REMOVE_ITEM USER_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/system_stm32f1xx.c"
+)
+
 # 2. 编译源文件
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${USER_SOURCES})
 

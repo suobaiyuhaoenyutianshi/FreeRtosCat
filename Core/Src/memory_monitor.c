@@ -40,57 +40,69 @@ static void prvMemoryMonitorTask( void * pvParameters )
 {
     (void)pvParameters;
     size_t xInitialFreeHeap = xPortGetFreeHeapSize();
+    uint32_t ulFeedDiv = 0U;
 
     for( ;; )
     {
-        size_t xFreeHeapNow = xPortGetFreeHeapSize();
-        size_t xMinEverFreeHeap  = xPortGetMinimumEverFreeHeapSize();
-        size_t xUsedHeap = configTOTAL_HEAP_SIZE - xFreeHeapNow;   // 修正
-        size_t xInitialUsedHeap = configTOTAL_HEAP_SIZE - xInitialFreeHeap;
-        size_t xHeapGrowth = ( xUsedHeap > xInitialUsedHeap ) ?
-                             ( xUsedHeap - xInitialUsedHeap ) : 0;
+        /* IWDG 超时约 410ms（Prescaler=4 / Reload=4095 / LSI≈40kHz），
+           这里每 MONITOR_FEED_INTERVAL_MS 喂一次狗；打印仍保持 MONITOR_INTERVAL_MS 的节奏 */
+        HAL_IWDG_Refresh( &hiwdg );
 
-        // 输出堆信息
-        App_USART2_Printf( "\n========== Memory Monitor ==========\n" );
-        App_USART2_Printf( "Heap:\n" );
-        App_USART2_Printf( "  Total       : %u bytes\n", ( unsigned ) configTOTAL_HEAP_SIZE );
-        App_USART2_Printf( "  Free now    : %u bytes\n", ( unsigned ) xFreeHeapNow );
-        App_USART2_Printf( "  Min ever    : %u bytes\n", ( unsigned ) xMinEverFreeHeap );
-        App_USART2_Printf( "  Used now    : %u bytes\n", ( unsigned ) xUsedHeap );
-        App_USART2_Printf( "  Growth      : %u bytes\n", ( unsigned ) xHeapGrowth );
+        if( ulFeedDiv == 0U )
+        {
+            size_t xFreeHeapNow = xPortGetFreeHeapSize();
+            size_t xMinEverFreeHeap  = xPortGetMinimumEverFreeHeapSize();
+            size_t xUsedHeap = configTOTAL_HEAP_SIZE - xFreeHeapNow;   // 修正
+            size_t xInitialUsedHeap = configTOTAL_HEAP_SIZE - xInitialFreeHeap;
+            size_t xHeapGrowth = ( xUsedHeap > xInitialUsedHeap ) ?
+                                 ( xUsedHeap - xInitialUsedHeap ) : 0;
 
-        // 输出任务栈信息
-        App_USART2_Printf( "Task Stacks (High Water Mark = min free ever):\n" );
-        if( ucMonitoredTaskCount == 0 )
-        {
-            
-            App_USART2_Printf( "  No tasks registered.\n" );
-        }
-        else
-        {
-            for( int i = 0; i < ucMonitoredTaskCount; i++ )
+            // 输出堆信息
+            App_USART2_Printf( "\n========== Memory Monitor ==========\n" );
+            App_USART2_Printf( "Heap:\n" );
+            App_USART2_Printf( "  Total       : %u bytes\n", ( unsigned ) configTOTAL_HEAP_SIZE );
+            App_USART2_Printf( "  Free now    : %u bytes\n", ( unsigned ) xFreeHeapNow );
+            App_USART2_Printf( "  Min ever    : %u bytes\n", ( unsigned ) xMinEverFreeHeap );
+            App_USART2_Printf( "  Used now    : %u bytes\n", ( unsigned ) xUsedHeap );
+            App_USART2_Printf( "  Growth      : %u bytes\n", ( unsigned ) xHeapGrowth );
+
+            // 输出任务栈信息
+            App_USART2_Printf( "Task Stacks (High Water Mark = min free ever):\n" );
+            if( ucMonitoredTaskCount == 0 )
             {
-                TaskHandle_t xTask = xMonitoredTaskHandles[i];
-                if( xTask == NULL )
+                
+                App_USART2_Printf( "  No tasks registered.\n" );
+            }
+            else
+            {
+                for( int i = 0; i < ucMonitoredTaskCount; i++ )
                 {
-                    App_USART2_Printf( "  [Invalid handle] : skipped\n" );
-                    continue;
-                }
-                const char* pcTaskName = pcTaskGetName(xTask);
-                UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark( xTask );
-                App_USART2_Printf( "  %-12s : min free %u words (%u bytes)\n",
-                   pcTaskName,
-                   ( unsigned ) uxHighWaterMark,
-                   ( unsigned ) uxHighWaterMark * sizeof(StackType_t) );
-                }
+                    TaskHandle_t xTask = xMonitoredTaskHandles[i];
+                    if( xTask == NULL )
+                    {
+                        App_USART2_Printf( "  [Invalid handle] : skipped\n" );
+                        continue;
+                    }
+                    const char* pcTaskName = pcTaskGetName(xTask);
+                    UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark( xTask );
+                    App_USART2_Printf( "  %-12s : min free %u words (%u bytes)\n",
+                       pcTaskName,
+                       ( unsigned ) uxHighWaterMark,
+                       ( unsigned ) uxHighWaterMark * sizeof(StackType_t) );
+                    }
+            }
+
+            UBaseType_t uxMonitorTaskHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+            App_USART2_Printf( "  %-12s : min free %u word (monitor itself)\n",
+                               "MemMon", ( unsigned ) uxMonitorTaskHighWaterMark );
+            App_USART2_Printf( "=====================================\n\n" );
         }
 
-        UBaseType_t uxMonitorTaskHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
-        App_USART2_Printf( "  %-12s : min free %u word (monitor itself)\n",
-                           "MemMon", ( unsigned ) uxMonitorTaskHighWaterMark );
-        App_USART2_Printf( "=====================================\n\n" );
+        if( ++ulFeedDiv >= ( MONITOR_INTERVAL_MS / MONITOR_FEED_INTERVAL_MS ) )
+        {
+            ulFeedDiv = 0U;
+        }
 
-        // 延时，控制输出频率
-        vTaskDelay( pdMS_TO_TICKS( MONITOR_INTERVAL_MS ) );
+        vTaskDelay( pdMS_TO_TICKS( MONITOR_FEED_INTERVAL_MS ) );
     }
 }

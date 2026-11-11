@@ -1,6 +1,7 @@
 #include "app_motor.h"
 #include "delay.h"
 #include "FreeRTOS.h"
+#include "main.h"
 #include "portmacro.h"
 #include "projdefs.h"
 #include "sched.h"
@@ -11,6 +12,7 @@
 #include "app_bat.h"
 #include <stdint.h>
 #include "stm32f103xb.h"
+#include "stm32f1xx_hal_i2c.h"
 #include "task.h"
 static PID_TypeDef pid_mot_l;
 static PID_TypeDef pid_mot_r;
@@ -50,8 +52,9 @@ void App_Motor_Cmd(uint8_t On){
 }
 void App_Motor_Proc(void* argument){
    for (;;) {
+
     ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-  
+    
     uint64_t now = GetUs();
     //当前转速
     float speed_l = App_Encoder_GetSpeed_L();

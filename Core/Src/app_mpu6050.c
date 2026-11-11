@@ -10,8 +10,16 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
+#include "delay.h"   /* DelayUs()：DWT 忙等，不依赖中断 */
 /* MPU6050 的 I2C 从机地址：7 位地址 0x68 左移 1 位 = 0xD0 */
 #define MPU6050_ADDR  0xD0
+
+/* I2C 超时：绝不能用 HAL_MAX_DELAY —— 总线被拉低时 HAL 会永久死等，
+ * 任务再也出不来，靠喂狗换来的就是"每 0.41s 复位一次" */
+#define MPU6050_I2C_TIMEOUT_MS  50
+
+/* 诊断数据统一放在 g_diag（类型 diag_ctx_t，定义在 main.h，实例在 main.c）
+ * 这里只负责采集：I2C 返回值、TIM2/NVIC/中断屏蔽现场 */
 
 /* 寄存器地址定义（只列出我们用到的） */
 #define MPU6050_REG_WHO_AM_I   0x75
@@ -33,29 +41,53 @@ static QueueHandle_t x_at_T;
 
 //内部辅助  向指定寄存器写一个字节 */
 static void mpu6050_writer(uint8_t reg,uint8_t val){
-     
-    HAL_I2C_Mem_Write(&hi2c1,MPU6050_ADDR,reg,I2C_MEMADD_SIZE_8BIT,&val,1,HAL_MAX_DELAY);
+
+    g_diag.i2c_last_ret = (uint32_t)HAL_I2C_Mem_Write(&hi2c1,MPU6050_ADDR,reg,I2C_MEMADD_SIZE_8BIT,&val,1,MPU6050_I2C_TIMEOUT_MS);
 }
-//内部辅助  向指定寄存器读
-static uint8_t mpu6050_read(uint8_t reg){
-    uint8_t val;
-    HAL_I2C_Mem_Read(&hi2c1,MPU6050_ADDR,reg,I2C_MEMADD_SIZE_8BIT,&val,1,HAL_MAX_DELAY);
-    return val;
+
+/* 调试路标：阻塞直发单字符（不经过 FreeRTOS/DMA），并顺带采集 tick 相关现场 */
+static void boot_mark(uint8_t c)
+{
+    g_diag.primask          = __get_PRIMASK();
+    g_diag.basepri          = __get_BASEPRI();
+    g_diag.tim2_cnt_prev    = g_diag.tim2_cnt;
+    g_diag.tim2_cnt         = TIM2->CNT;
+    g_diag.tim2_sr          = TIM2->SR;
+    g_diag.tim2_dier        = TIM2->DIER;
+    g_diag.nvic_iser0       = NVIC->ISER[0];
+    /* 向量表第 (16 + TIM2_IRQn) 项就是 TIM2 中断实际跳转的地址，
+       如果它不是 TIM2_IRQHandler 而是 Default_Handler，就说明中断没接上 */
+    g_diag.tim2_vector      = ((const uint32_t *)SCB->VTOR)[16 + (uint32_t)TIM2_IRQn];
+
+    HAL_UART_Transmit(&huart2, &c, 1, 20);
 }
 
 void App_MPU6050_Init(void){
     x_at_T = xQueueCreate(1,sizeof(Attitude_t));
+    boot_mark('a');                    /* 队列创建完 */
      /* 1. 复位设备（写入 0x80 到电源管理寄存器） */
      mpu6050_writer(MPU6050_REG_PWR_MGMT_1,0x80);
-    HAL_Delay(100);   // 等待复位完成
+    boot_mark('b');                    /* 第 1 次 I2C 写返回 */
+    /* ⚠️ 这里绝对不能用 HAL_Delay！
+     * 调度器启动前，最后 uxCriticalNesting 初值是 0xaaaaaaaa（port.c:141），
+     * 只要之前调用过任何 xQueueCreate/xSemaphoreCreateBinary（会进临界区，
+     * 把 BASEPRI 设成 0x50），vPortExitCritical 就永远不会把中断重新打开
+     * （port.c:444-453）。HAL_Delay 依赖 TIM2 的 1ms 中断来推进 uwTick，
+     * 中断被屏蔽后它就是一个死循环，只能等 IWDG 复位。
+     * 改用 DWT 周期计数的 DelayUs，不依赖任何中断。 */
+    DelayUs(100000);   // 等待复位完成（100ms）
+        boot_mark('c');                    /* HAL_Delay 返回 = HAL tick 正常 */
 
     /* 2. 唤醒 MPU6050（写入 0x00，清除休眠位） */
     mpu6050_writer(MPU6050_REG_PWR_MGMT_1,0x00);
+    boot_mark('d');
     /* 3. 设置陀螺仪满量程为 ±2000°/s（寄存器 0x1B 写入 0x18） */
     mpu6050_writer(MPU6050_REG_GYRO_CONFIG,0x18);
+    boot_mark('e');
        /* 4. 设置加速度计满量程为 ±2g（寄存器 0x1C 写入 0x00） */
     mpu6050_writer(MPU6050_REG_ACCEL_CONFIG, 0x00);
-
+    boot_mark('f');                    /* MPU 初始化全部完成 */
+    
 }
 void App_MPU6050_Update(void);
 /* ⚠️ 死代码：姿态滤波已经搬到 App_Attitude_Task 里了，本函数现在没有任何地方调用。
@@ -83,14 +115,19 @@ void App_MPU6050_Proc(void){
  */
 void App_MPU6050_Update(){
     uint8_t RAW[14];
-    HAL_I2C_Mem_Read(&hi2c1,MPU6050_ADDR,MPU6050_REG_ACCEL_XOUT_H,I2C_MEMADD_SIZE_8BIT,RAW,14,HAL_MAX_DELAY);
+    /* 读失败就直接保留上一次的数据，不要拿全 0/垃圾值去解算姿态
+       （也避免 HAL_MAX_DELAY 在总线异常时把任务永久卡死） */
+    if (HAL_I2C_Mem_Read(&hi2c1,MPU6050_ADDR,MPU6050_REG_ACCEL_XOUT_H,I2C_MEMADD_SIZE_8BIT,RAW,14,MPU6050_I2C_TIMEOUT_MS) != HAL_OK)
+    {
+        return;
+    }
     int16_t ax_raw = (int16_t)((RAW[0]<<8) | RAW[1]);
      int16_t ay_raw = (int16_t)((RAW[2]<<8) | RAW[3]);
      int16_t az_raw = (int16_t)((RAW[4]<<8) | RAW[5]);
      int16_t temp_raw = (int16_t)((RAW[6]<<8) | RAW[7]);
      int16_t gx_raw = (int16_t)((RAW[8]<<8) | RAW[9]);
-      int16_t gy_raw = (int16_t)((RAW[10]<<8) | RAW[11]);
-       int16_t gz_raw = (int16_t)((RAW[12]<<8) | RAW[13]);
+     int16_t gy_raw = (int16_t)((RAW[10]<<8) | RAW[11]);
+     int16_t gz_raw = (int16_t)((RAW[12]<<8) | RAW[13]);
     
     /* 换算加速度：±2g 量程，16 位分辨率 → 1 LSB = 2/32768 = 0.000061035 g */
     ax = ax_raw * 6.1035e-5f;
@@ -151,8 +188,8 @@ float App_MPU6050_GetRoll(){
  */
 void App_Attitude_Task(void *argument)
 {
-    (void)argument;
     TickType_t last_wake = xTaskGetTickCount();
+    TaskHandle_t ctrl_h = (TaskHandle_t)argument;   // 事件驱动修复：收到控制任务句柄
 
     for (;;)
     {
@@ -182,6 +219,13 @@ void App_Attitude_Task(void *argument)
         a.pitch = pitch;  a.gx = gx;  a.gz = gz;
         a.tick  = xTaskGetTickCount();
         xQueueOverwrite(x_at_T,&a);
+
+        /* 事件驱动修复：写完邮箱后立即通知控制任务去取最新帧。
+           修复前控制任务靠"同周期+Peek"碰运气读帧，有相位不确定性；
+           修复后控制任务被通知唤醒，必读到最新一帧姿态。 */
+        if (ctrl_h != NULL) {
+            xTaskNotifyGive(ctrl_h);
+        }
 
         /* 固定 5ms 周期唤醒自己 */
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ATTITUDE_PERIOD_MS));

@@ -15,6 +15,13 @@
 
 #define INVALID_TICK 0xffffffffffffffff
 
+/* Δt 合法性钳位：GetUs() 是 32 位微秒计数，72MHz 下约 59.65s 回绕一次回到 0。
+ * 回绕那一拍 (now - LastTime) 在 uint64 里会得到 2^64 - 已有微秒数 ≈ 1.8e19 µs
+ * （≈1.8e13 s），Ki*dt 会把积分项瞬间打到输出限幅，表现为车突然猛抽一下甚至栽倒。
+ * 这里把异常 Δt 统一按标称 5ms 处理，同时避免 dt<=0 时微分项除零。 */
+#define PID_DT_NOMINAL_S   0.005f
+#define PID_DT_MAX_S       0.1f
+
 //
 // @简介：初始化PID控制器
 // @参数：PID - PID算法句柄
@@ -75,6 +82,12 @@ float PID_Compute1(PID_TypeDef *PID, float Input, uint64_t now)
 {
 	float error	= PID->Setpoint - Input;
 	float dt = (now - PID->LastTime) * 1.0e-6f; // Δt
+	
+	/* 时间戳回绕/异常间隔保护：不钳位会让积分项被一次巨量 Δt 打到限幅 */
+	if((dt <= 0.0f) || (dt > PID_DT_MAX_S))
+	{
+		dt = PID_DT_NOMINAL_S;
+	}
 	
 	float output = PID->Kp * error; // 比例环节
 	
@@ -139,6 +152,12 @@ float PID_Compute2(PID_TypeDef *PID, float Input, float dInputDt, uint64_t now)
 {
 	float error	= PID->Setpoint - Input;
 	float dt = (now - PID->LastTime) * 1.0e-6f;
+	
+	/* 时间戳回绕/异常间隔保护：不钳位会让积分项被一次巨量 Δt 打到限幅 */
+	if((dt <= 0.0f) || (dt > PID_DT_MAX_S))
+	{
+		dt = PID_DT_NOMINAL_S;
+	}
 	
 	float output = PID->Kp * error;
 	

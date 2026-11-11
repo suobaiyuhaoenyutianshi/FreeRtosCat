@@ -223,6 +223,7 @@ void App_Control_Task(void *argument){
              初值给 1，保证上电调度器启动后先跑一帧，避免首帧空等。 */
     for(;;){
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        
         App_Control_Proc();
         /* 电量指示：原临时任务删除后，这条 20ms 内部节流的裸机逻辑
            并入控制任务，保证低电量 LED 行为不变 */

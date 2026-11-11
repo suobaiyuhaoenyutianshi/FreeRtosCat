@@ -24,6 +24,10 @@
 #ifndef MONITOR_INTERVAL_MS
     #define MONITOR_INTERVAL_MS (2000)
 #endif
+/** 喂狗周期，单位毫秒。IWDG 超时约 410ms（Prescaler=4/Reload=4095/LSI≈40kHz），必须远小于它 */
+#ifndef MONITOR_FEED_INTERVAL_MS
+    #define MONITOR_FEED_INTERVAL_MS (100)
+#endif
 /** 最多监控的任务数量 */
 #ifndef MAX_MONITORED_TASKS
     #define MAX_MONITORED_TASKS        ( 10 )
