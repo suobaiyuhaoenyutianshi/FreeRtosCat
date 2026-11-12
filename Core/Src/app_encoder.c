@@ -21,8 +21,8 @@ static volatile int8_t   dir_r = 0;
 static volatile int8_t   last_dir_r = 0;
 static volatile uint8_t  phase_r = 0;
 
-static volatile uint64_t t0_l = 0, t1_l = 0;
-static volatile uint64_t t0_r = 0, t1_r = 0;
+static volatile uint32_t t0_l = 0, t1_l = 0;
+static volatile uint32_t t0_r = 0, t1_r = 0;
 
 static float m_l[2] = { DUTY_L * 2.0f, 2.0f - DUTY_L * 2.0f };
 static float m_r[2] = { DUTY_R * 2.0f, 2.0f - DUTY_R * 2.0f };
@@ -86,10 +86,10 @@ float App_Encoder_GetSpeed_L(void)
     int8_t dir = dir_l;
     int8_t last = last_dir_l;
     uint8_t phase = phase_l;
-    uint64_t t0 = t0_l;
-    uint64_t t1 = t1_l;
+    uint32_t t0 = t0_l;
+    uint32_t t1 = t1_l;
     __enable_irq();
-    uint64_t now = GetUs();
+    uint32_t now = GetTick();
     if(dir ==0 || last ==0)return  0.00f;
     if (dir!= last) {
         return 0.00f;
@@ -100,10 +100,10 @@ float App_Encoder_GetSpeed_L(void)
     float M,T;
     if (fabs(mo) * (now - t0) >fabs(mNow)*(t0 - t1)) {
         M = mNow;
-        T = (now - t0)*1.0e-6f;
+        T = TICKS_TO_SEC(now - t0);
     }else {
         M = mo;
-        T = (t0 - t1) * 1.0e-6f;
+        T = TICKS_TO_SEC(t0 - t1);
     }
      return M / T * 0.01399402208920360588844895090594f;
 
@@ -116,14 +116,14 @@ float App_Encoder_GetSpeed_R(void)
     int8_t   dir  = dir_r;
     int8_t   last = last_dir_r;
     uint8_t  ph   = phase_r;
-    uint64_t t0   = t0_r;
-    uint64_t t1   = t1_r;
+    uint32_t t0   = t0_r;
+    uint32_t t1   = t1_r;
     __enable_irq();
 
     if (dir == 0 || last == 0) return 0.0f;
     if (dir != last) return 0.0f;
 
-    uint64_t now = GetUs();
+    uint32_t now = GetTick();
     uint8_t next_ph = ph ^ 1;
 
     float M0   = dir * m_r[ph];
@@ -133,12 +133,12 @@ float App_Encoder_GetSpeed_R(void)
     if (fabsf(Mnow) * (t0 - t1) < fabsf(M0) * (now - t0))
     {
         M = Mnow;
-        T = (now - t0) * 1.0e-6f;
+        T = TICKS_TO_SEC(now - t0);
     }
     else
     {
         M = M0;
-        T = (t0 - t1) * 1.0e-6f;
+        T = TICKS_TO_SEC(t0 - t1);
     }
 
     return -M / T * 0.01399402208920360588844895090594f;// encoder_l * (2.0f * PI * 1500.0f / (22.0f * 30613.0f));
@@ -151,7 +151,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
    if (GPIO_Pin ==GPIO_PIN_14) {
         last_dir_l = dir_l;
         t1_l =t0_l;
-        t0_l = GetUs();
+        t0_l = GetTick();
         uint8_t A = HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_14);
         uint8_t B = HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_15);
         if (A) {
@@ -173,7 +173,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
    }else if (GPIO_Pin == GPIO_PIN_3) {
       last_dir_r = dir_r;
         t1_r =t0_r;
-        t0_r = GetUs();
+        t0_r = GetTick();
         uint8_t A = HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_3);
         uint8_t B = HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_4);
         if (A) {

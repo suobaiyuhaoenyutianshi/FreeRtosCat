@@ -30,7 +30,7 @@ typedef struct{
 typedef struct{
 	PID_InitTypeDef Init;
 	uint8_t cmd; // 0 - PID禁止 1 - PID使能
-	uint64_t LastTime; // PID上次运行的时间，用于计算Δt
+	uint32_t LastTime; // PID上次运行的 tick 时间戳（DWT CYCCNT），用于计算Δt
 	float ITerm; // 积分项
 	float DTerm; // 微分项
 	float LastInput; // 上次的输入值
@@ -49,8 +49,8 @@ typedef struct{
  void PID_LpfConfig(PID_TypeDef *PID, float Tf, uint8_t NewState);
  void PID_Cmd(PID_TypeDef *PID, uint8_t NewState);
  void PID_Reset(PID_TypeDef *PID);
-float PID_Compute1(PID_TypeDef *PID, float Input, uint64_t Now);
-float PID_Compute2(PID_TypeDef *PID, float Input, float dInput, uint64_t Now);
+float PID_Compute1(PID_TypeDef *PID, float Input, uint32_t Now);
+float PID_Compute2(PID_TypeDef *PID, float Input, float dInput, uint32_t Now);
  void PID_ChangeTunings(PID_TypeDef *PID, float NewKp, float NewKi, float NewKd);
  void PID_ChangeSetpoint(PID_TypeDef *PID, float NewSetpoint);
 

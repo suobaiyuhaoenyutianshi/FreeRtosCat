@@ -17,8 +17,8 @@ void DelayUs(uint32_t us){
  // 减法比较：CYCCNT 回绕(约59.6s@72MHz)也正确，避免加法 end 溢出死循环
  while ((DWT->CYCCNT - start) < ticks);
 }
-//获取系统上电以来的微秒数
-uint64_t GetUs(void)
+//获取 DWT 周期计数（tick 域）。32 位模计数器，除数不做，回绕(59.65s)靠 uint32 相减吸收
+uint32_t GetTick(void)
 {
-    return DWT->CYCCNT / (SystemCoreClock / 1000000);
+    return DWT->CYCCNT;
 }

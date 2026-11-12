@@ -12,13 +12,14 @@
 */
 
 #include "pid.h"
+#include "delay.h"
 
-#define INVALID_TICK 0xffffffffffffffff
+#define INVALID_TICK 0xFFFFFFFFU
 
-/* Δt 合法性钳位：GetUs() 是 32 位微秒计数，72MHz 下约 59.65s 回绕一次回到 0。
- * 回绕那一拍 (now - LastTime) 在 uint64 里会得到 2^64 - 已有微秒数 ≈ 1.8e19 µs
- * （≈1.8e13 s），Ki*dt 会把积分项瞬间打到输出限幅，表现为车突然猛抽一下甚至栽倒。
- * 这里把异常 Δt 统一按标称 5ms 处理，同时避免 dt<=0 时微分项除零。 */
+/* Δt 合法性钳位。时间戳统一为 DWT tick（32 位模计数，72MHz 下 59.65s 回绕），
+ * 差值在 uint32 里相减，回绕那一拍会正确得到"几十个 tick"的小值，不再是巨量。
+ * 这里钳的是另一类问题——真实的长间隔：首帧、下断点、任务被长时间抢占。
+ * 不钳位会让 Ki*dt 把积分项一次打到限幅（车猛抽甚至栽倒），且 dt=0 时微分项除零。 */
 #define PID_DT_NOMINAL_S   0.005f
 #define PID_DT_MAX_S       0.1f
 
@@ -75,15 +76,15 @@ void PID_Reset(PID_TypeDef *PID)
 // @简介：执行一次PID运算并得出控制器当前的输出值
 // @参数：PID - PID控制器
 // @参数：Input  - 传感器的输入值
-// @参数：now - 当前时间，单位us
+// @参数：now - 当前 tick 时间戳（GetTick()）
 // @返回：控制器当前的输出值
 //
-float PID_Compute1(PID_TypeDef *PID, float Input, uint64_t now)
+float PID_Compute1(PID_TypeDef *PID, float Input, uint32_t now)
 {
 	float error	= PID->Setpoint - Input;
-	float dt = (now - PID->LastTime) * 1.0e-6f; // Δt
+	float dt = TICKS_TO_SEC(now - PID->LastTime); // Δt：先 uint32 相减，再换算
 	
-	/* 时间戳回绕/异常间隔保护：不钳位会让积分项被一次巨量 Δt 打到限幅 */
+	/* 异常间隔保护（首帧/断点/长阻塞）：不钳位会让积分项被一次巨量 Δt 打到限幅 */
 	if((dt <= 0.0f) || (dt > PID_DT_MAX_S))
 	{
 		dt = PID_DT_NOMINAL_S;
@@ -148,12 +149,12 @@ float PID_Compute1(PID_TypeDef *PID, float Input, uint64_t now)
 // @参数：dInputDt - 传感器输入的变化速度 dInput(k) = (Input(k) - Input(k-1)) / dt
 // @返回：控制器当前的输出值
 //
-float PID_Compute2(PID_TypeDef *PID, float Input, float dInputDt, uint64_t now)
+float PID_Compute2(PID_TypeDef *PID, float Input, float dInputDt, uint32_t now)
 {
 	float error	= PID->Setpoint - Input;
-	float dt = (now - PID->LastTime) * 1.0e-6f;
+	float dt = TICKS_TO_SEC(now - PID->LastTime); // Δt：先 uint32 相减，再换算
 	
-	/* 时间戳回绕/异常间隔保护：不钳位会让积分项被一次巨量 Δt 打到限幅 */
+	/* 异常间隔保护（首帧/断点/长阻塞）：不钳位会让积分项被一次巨量 Δt 打到限幅 */
 	if((dt <= 0.0f) || (dt > PID_DT_MAX_S))
 	{
 		dt = PID_DT_NOMINAL_S;

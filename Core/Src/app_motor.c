@@ -55,7 +55,7 @@ void App_Motor_Proc(void* argument){
 
     ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
     
-    uint64_t now = GetUs();
+    uint32_t now = GetTick();
     //当前转速
     float speed_l = App_Encoder_GetSpeed_L();
     float speed_r = App_Encoder_GetSpeed_R();

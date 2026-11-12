@@ -25,7 +25,8 @@ static const float WHEEL_RADIUS_M = 0.032f;  // 车轮半径 m
 #define WHEEL_OMEGA_REF_MAX_RADPS   (31.4f)
 
 /* ===== 控制器状态 ===== */
-static volatile uint64_t last_calc_us = 0;         // 上次控制运算的时间戳 (us)
+static volatile uint32_t last_calc_tick = 0;       // 上次控制运算的 tick 时间戳 (DWT CYCCNT)
+static uint8_t  s_dt_valid = 0;                    // 是否已经有过上一帧（首帧不积分）
 static float wheel_omega_ref_radps = 0.0f;         // 积分得到的目标轮速 (rad/s)
 static Attitude_t last_good_att;                   // 最近一次有效的姿态快照（fail-safe 兜底用）
 static uint32_t   att_fail_cnt = 0;                // 连续失效次数（预留：可据此做超阈降级/停车）
@@ -72,7 +73,7 @@ void App_Control_Init(void){
  *         调用顺序：速度环 → 加速度转倾角 → 角度环 → 角速度环 → 逆解算 → 积分 → 电机命令
  */
 void App_Control_Proc(void){
-    uint64_t now_us = GetUs();
+    uint32_t now_tick = GetTick();
     /////有问题  记得你要一开始测个默认值
     /* ===== 1. 计算控制周期 dt =====
      * 原理：dt 是积分器的“步长”。积分式是  目标轮速 += 加速度 × dt，
@@ -81,14 +82,15 @@ void App_Control_Proc(void){
      * 但真实间隔会被这些情况拉长：任务被高优先级抢占、中断占用较久、
      * 调试时下断点暂停、以及上电后的第一次调用。
      *
-     * 【单位陷阱】dt 必须在“微秒域”钳位，再转成秒。若在秒域判断，
-     * 阈值就会错 100 万倍（100000us 的钳位写成 100000s），形同虚设。
+     * 【tick 域】时间戳是 DWT 原始计数（32 位模计数器）。差值必须先在 uint32
+     * 里相减：回绕那一拍会自动得到“几十个 tick”的小值，不会再出现 2^64 巨量。
+     * 换算成秒后再做 100ms 钳位，挡的是“真实的长间隔”（首帧/断点/长阻塞）。
      */
-    uint64_t diff_us = now_us - last_calc_us;   // 时间差 (us)，无符号相减，回绕安全
-    if (diff_us > 100000u) {                    // 超过 100ms（20×5ms）算异常
-        diff_us = 5000u;                        // 回退到标称 5ms，防巨量灌进积分器
+    uint32_t diff_tick = now_tick - last_calc_tick;   // mod 2^32，回绕安全
+    float dt_s = TICKS_TO_SEC(diff_tick);             // 真正的时间间隔 (s)
+    if (dt_s > 0.1f) {                                // 超过 100ms（20×5ms）算异常
+        dt_s = 0.005f;                                // 回退到标称 5ms，防巨量灌进积分器
     }
-    float dt_s = diff_us * 1.0e-6f;             // 真正的时间间隔 (s)
     float wheel_omega_meas = (App_Encoder_GetSpeed_R()+App_Encoder_GetSpeed_L())/2;
     Attitude_t a;
      float pitch_rad       ;
@@ -131,7 +133,8 @@ void App_Control_Proc(void){
         PID_Reset(&pid_pitch);
         PID_Reset(&pid_pitch_rate);
         PID_Reset(&pid_yaw_rate);
-        last_calc_us = now_us;
+        last_calc_tick = now_tick;
+        s_dt_valid = 1;
         return;                                      /* 不再向电机环下发目标轮速 */
     }
     App_Motor_Cmd(1);                                /* 正常姿态：保证 STBY 为高（重复写无害） */
@@ -156,19 +159,19 @@ void App_Control_Proc(void){
      // ===== 4. 速度环 PID：速度误差 → 所需加速度 =====
     // PID 输出直接代表目标水平加速度 accel_ref_mps2 (m/s²)
     // 物理原理：Kp*error 产生与误差成正比的加速度，积分项消除稳态误差
-    float accel_ref_mps2 = PID_Compute1(&pid_speed,vel_body_mps,now_us);
+    float accel_ref_mps2 = PID_Compute1(&pid_speed,vel_body_mps,now_tick);
     // 加速度 → 目标倾角：重力分量提供加速度，a = g*tanθ → θ = atan(a/g)
     float pitch_ref_rad = qatan(accel_ref_mps2/GRAVITY_MPS2);
     // ===== 5. 角度环 PID：倾角误差 → 目标角速度 =====
     PID_ChangeSetpoint(&pid_pitch,pitch_ref_rad);
-    float pitch_rate_ref_radps = PID_Compute1(&pid_pitch,pitch_rad,now_us);
+    float pitch_rate_ref_radps = PID_Compute1(&pid_pitch,pitch_rad,now_tick);
     // ===== 6. 角速度环 PID：角速度误差 → 目标角加速度 =====
     PID_ChangeSetpoint(&pid_pitch_rate,pitch_rate_ref_radps);
-    float pitch_accel_ref_radps2 = PID_Compute1(&pid_pitch_rate,pitch_rate_radps,now_us);
+    float pitch_accel_ref_radps2 = PID_Compute1(&pid_pitch_rate,pitch_rate_radps,now_tick);
     // ===== 7. 逆解算：角加速度 → 车轮线加速度 =====
     // 根据倒立摆动力学：车轮加速度 accel_wheel_ref_mps2 = (g*sinθ - pitch_accel_ref * PENDULUM_LEN_M) / cosθ
     float accel_wheel_ref_mps2 = (GRAVITY_MPS2 * qsin(pitch_rad) - pitch_accel_ref_radps2 * PENDULUM_LEN_M) / qcos(pitch_rad);
-    if (last_calc_us!=0) {
+    if (s_dt_valid) {
         wheel_omega_ref_radps += (1.0f / WHEEL_RADIUS_M) * accel_wheel_ref_mps2 * dt_s;
 
         /* 积分限幅（anti-windup，抗积分饱和）
@@ -186,12 +189,13 @@ void App_Control_Proc(void){
         }
     }
     float yaw_rate_meas_radps = a.gz*0.0174533f;
-    float yaw_diff_omega   =  PID_Compute1(&pid_yaw_rate,yaw_rate_meas_radps,now_us) ;
+    float yaw_diff_omega   =  PID_Compute1(&pid_yaw_rate,yaw_rate_meas_radps,now_tick) ;
      // 9. 将目标轮速发给电机速度环 
     App_Motor_SetOmega_L(wheel_omega_ref_radps-yaw_diff_omega);
     App_Motor_SetOmega_R(wheel_omega_ref_radps+yaw_diff_omega);
 
-    last_calc_us = now_us; // 保存本次时间戳
+    last_calc_tick = now_tick; // 保存本次时间戳
+    s_dt_valid = 1;
 
 }
 /**
@@ -199,7 +203,8 @@ void App_Control_Proc(void){
  */
 void App_Control_Reset(void)
 {
-    last_calc_us  = 0;
+    last_calc_tick  = 0;
+    s_dt_valid = 0;
     wheel_omega_ref_radps = 0.0f;
 
     PID_Reset(&pid_speed);
