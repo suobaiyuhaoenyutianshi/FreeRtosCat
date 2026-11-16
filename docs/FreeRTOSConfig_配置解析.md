@@ -10,6 +10,8 @@
 | tick 频率 `configTICK_RATE_HZ` | 1000 Hz（1 tick = 1ms） |
 | 配置文件 | `freeRTOS/Inc/FreeRTOSConfig.h` |
 
+> 数据日期：2026-11-16（以当前代码为准；配置项增删会导致行号漂移，核对时以符号名为准）。
+>
 > 说明：该文件基于官方模板，因此"哪些被定制"只能从**非默认值**判断。下表列出几乎可以确定是手工定制过的项。
 
 ---
@@ -18,12 +20,12 @@
 
 | 行 | 配置 | 当前值 | 模板默认 | 作用与对本工程的影响 |
 |---|---|---|---|---|
-| L292 | `configTOTAL_HEAP_SIZE` | **7680** | 4096 | 内核堆（heap_4，静态数组在 .bss）。中文注释按 6 个任务 + 2 队列 + 2 信号量核算到 7136B，**只剩约 536B 余量** |
+| L297 | `configTOTAL_HEAP_SIZE` | **9728** | 4096 | 内核堆（heap_4，静态数组在 .bss）。按 6 个动态任务的栈 + TCB + 2 队列 + 2 信号量核算，常驻约 7.6KB，静态余量约 2KB；打印时另有最多 6 份临时缓冲（单份上限 272B），峰值会再吃掉部分余量 |
 | L187 | `configHEAP_CLEAR_MEMORY_ON_FREE` | **1** | 0 | `vPortFree` 时把内存清零。调试期能发现 use-after-free 读到脏数据，代价是每次释放多一次 memset |
 | L270 | `configSUPPORT_STATIC_ALLOCATION` | **1** | 0 | 允许静态创建任务/队列，也是 `sizeof(StaticTask_t)` 可用的前提（TCB 大小就靠它） |
-| L567 | `configKERNEL_PROVIDED_STATIC_MEMORY` | **1** | 未定义 | 内核**自己**给 Idle / Timer 任务提供静态内存。好处：这两个任务不占那 7680B 堆，且不用写 `vApplicationGetIdleTaskMemory()` |
+| L574 | `configKERNEL_PROVIDED_STATIC_MEMORY` | **1** | 未定义 | 内核**自己**给 Idle / Timer 任务提供静态内存。好处：Idle 任务不占那 9728B 堆，且不用写 `vApplicationGetIdleTaskMemory()`；Timer 任务因 `configUSE_TIMERS=0` 不存在 |
 | L362 | `configCHECK_FOR_STACK_OVERFLOW` | **2** | 0 | 每次任务切换检查栈末端的 `0xA5A5A5A5` 标记是否被踩。最费时但最有效，配合 `memory_monitor.c` 的栈水位统计是双保险 |
-| L218 | `configUSE_TIMERS` | **1** | 0 | 编入软件定时器，会额外产生 Timer 任务 + 定时器队列 |
+| L219 | `configUSE_TIMERS` | **0** | 0 | 关闭软件定时器：不产生 Timer 任务与定时器队列，省 Flash 与 RAM |
 | L157 | `configENABLE_BACKWARD_COMPATIBILITY` | **0** | 1 | 关掉旧版 API 别名（`vTaskDelayUntil` 的老名字等），省一点 Flash |
 | L328 | `configMAX_SYSCALL_INTERRUPT_PRIORITY` | **5<<4** | 0 | **最关键的项**：只有优先级数值 ≥5 的中断才允许调用 `xxxFromISR()` |
 | L612 | `INCLUDE_uxTaskGetStackHighWaterMark` | **1** | 0 | 就是 `memory_monitor.c` 用的那个函数 |
@@ -60,7 +62,8 @@
 - `configUSE_TRACE_FACILITY 0`、`configGENERATE_RUN_TIME_STATS 0`、`configUSE_STATS_FORMATTING_FUNCTIONS 0` → 不做 CPU 占用统计、不编 `vTaskList`
 - `configQUEUE_REGISTRY_SIZE 0` → 调试器看不到队列名（内核感知调试用）
 - `configUSE_QUEUE_SETS 0`、`configUSE_CO_ROUTINES 0`、`configNUM_THREAD_LOCAL_STORAGE_POINTERS 0`、`configUSE_APPLICATION_TASK_TAG 0`
-- `configUSE_IDLE_HOOK` / `TICK_HOOK` / `MALLOC_FAILED_HOOK` 全 0 → 对应钩子函数都不用实现
+- `configUSE_IDLE_HOOK 0`、`configUSE_TICK_HOOK 0` → 对应钩子不实现
+- `configUSE_MALLOC_FAILED_HOOK 1` → 堆分配失败时进入 `vApplicationMallocFailedHook()`：记录失败次数、失败时剩余堆、调用者返回地址，然后关中断死循环（`main.c` 中实现）
 
 ### 保留的功能
 
@@ -76,17 +79,21 @@
 
 ## 三、三个值得注意的地方
 
-### 1. `configUSE_TIMERS 1` 可能是多余的
+### 1. `configUSE_TIMERS = 0`：软件定时器已关闭
 
-项目里没有任何 `xTimerCreate` / `xTimerStart` 调用。开了它，内核会常驻一个 Timer 任务（128 字栈 = 512B，虽然走静态内存不占堆，但占 .bss）和一个队列。F103C8T6 只有 20KB RAM，如果确认不用，改成 `0` 可以省下这些。
+项目里没有任何 `xTimerCreate` / `xTimerStart` 调用，因此关闭软件定时器：不产生 Timer 任务（128 字栈 = 512B）与定时器队列，省下 Flash 和 .bss。`configTIMER_TASK_PRIORITY` / `configTIMER_TASK_STACK_DEPTH` 仍留在文件里，但当前不生效；`INCLUDE_xTimerPendFunctionCall` 也必须为 0，否则 `timers.c` 编译报错。
 
 ### 2. `configMAX_SYSCALL_INTERRUPT_PRIORITY = 5` 是个硬约束
 
-`main.c:695` 的 TIM 回调里调用了 `vTaskNotifyGiveFromISR(mot, &xhw)`。这类 `FromISR` API 要求**中断优先级数值 ≥ 5**（数值越大优先级越低）。如果 TIM2 / UART 的 NVIC 优先级在 CubeMX 里被设成 0~4，`configASSERT` 会让你直接卡死在死循环里。这条是配置里最容易踩的坑，建议核对一下所有调 `FromISR` 的中断。
+`main.c:820-839` 的 TIM2 回调里调用了 `vTaskNotifyGiveFromISR(mot, &xhw)`。这类 `FromISR` API 要求**中断优先级数值 ≥ 5**（数值越大优先级越低）。如果 TIM2 / UART 的 NVIC 优先级在 CubeMX 里被设成 0~4，`configASSERT` 会让你直接卡死在死循环里。这条是配置里最容易踩的坑，建议核对一下所有调 `FromISR` 的中断。
 
-### 3. 堆余量只有 ~536B
+### 3. 堆余量约 2KB，且被打印缓冲进一步占用
 
-注释算得很清楚，但这也意味着再增加一个任务或队列就可能 `pvPortMalloc` 失败（`xTaskCreate` 返回 `errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY`），而 `configUSE_MALLOC_FAILED_HOOK = 0` 意味着**失败时不会有任何提示**，程序看着能跑但任务没起来。建议要么留出更多余量，要么把 `MALLOC_FAILED_HOOK` 打开并在钩子里打印。
+按 6 个动态任务的创建参数（128+384+256+128+512+256 = 1664 字 = 6656B 栈）加 6 个 TCB、2 个队列、2 个二值信号量，常驻对象约 7.6KB，`configTOTAL_HEAP_SIZE = 9728` 的静态余量约 2KB。
+
+但 USART2 打印链路是**动态临时分配**：队列里最多 5 份 + DMA 正在发送 1 份，单份上限 272B，峰值可再占约 1.6KB。因此“2KB 余量”不等于可以随意再加任务；新增任务/队列前应先上板看 MemMon 打印的 `Min ever`。
+
+失败后果：`configUSE_MALLOC_FAILED_HOOK = 1`，`pvPortMalloc` 失败会进入 `vApplicationMallocFailedHook()`，记录 `g_ulMallocFailedCount` / `g_ulMallocFailedFreeHeap` / `g_pvMallocFailedCaller` 后关中断死循环，可接调试器定位，不会静默丢任务。
 
 ---
 

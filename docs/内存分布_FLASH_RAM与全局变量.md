@@ -2,18 +2,18 @@
 
 > 对象：STM32F103C8T6（FLASH 64 KB / RAM 20 KB）
 > 依据：`build/Debug/CARTESTFreertos.map`、`arm-none-eabi-readelf -l/-S`、链接脚本 `stm32f103c8tx_flash.ld`
-> 数据日期：2026-11-09
+> 数据日期：2026-11-16（Debug `-Og` 构型，提交 `d00db29` 后的干净构建）
 
 ## 1. 编译输出的含义
 
 ```
 
-RAM:   14,560 B / 20 KB = 71.1%
-FLASH: 48,120 B / 64 KB = 73.4%
+RAM:   14,480 B / 20 KB = 70.7%
+FLASH: 48,184 B / 64 KB = 73.5%
 
 ```
 
-这两个百分比表示“链接器已经分配出去的地址空间占比”，而不是运行时真实用掉的量。最典型的例子：RAM 里的 9.7 KB 是 FreeRTOS 堆，上电就整块划走，用不用都算在 71% 里。
+这两个百分比表示“链接器已经分配出去的地址空间占比”，而不是运行时真实用掉的量。最典型的例子：RAM 里的 9.7 KB 是 FreeRTOS 堆，上电就整块划走，用不用都算在 70.7% 里。
 
 ## 2. 全局变量、常量、局部变量放在哪
 
@@ -35,7 +35,7 @@ FLASH: 48,120 B / 64 KB = 73.4%
 
 | 变量 | 段 |
 |---|---|
-| `static volatile uint64_t last_calc_us = 0;` | `.bss`（初值为 0） |
+| `static volatile uint32_t last_calc_tick = 0;` | `.bss`（初值为 0） |
 | `static float wheel_omega_ref_radps = 0.0f;` | `.bss` |
 | `static Attitude_t last_good_att;` | `.bss` |
 | `static PID_TypeDef pid_speed;` 等 4 个 PID | `.bss` |
@@ -45,33 +45,33 @@ FLASH: 48,120 B / 64 KB = 73.4%
 
 ## 3. 本项目当前的实际分布
 
-### FLASH 48,120 B（73.4%）
+### FLASH 48,184 B（73.5%）
 
 | 内容 | 大小 | 占比 |
 |---|---|---|
-| 中断向量表 + 代码 `.text` | 39,116 B | 59.7% |
+| 中断向量表 `.isr_vector` | 272 B | 0.4% |
+| 代码 `.text` | 38,912 B | 59.4% |
 | 常量 `.rodata` | 8,892 B | 13.6% |
-| 启动表 `.ARM/.init_array/.fini_array` + `.data` 初值副本 | 112 B | 0.2% |
-| 空闲 | 17,432 B | 26.6% |
+| 启动表 `.ARM/.init_array/.fini_array` + `.data` 初值副本 | 108 B | 0.2% |
+| 未使用 | 17,352 B | 26.5% |
 
 `.rodata` 里 `sin_vals` 和 `tan_vals` 各 1024 个 float，合计 8,192 B，占了常量的 92%（`Core/Src/qmath.c`）。如果以后不再使用 qmath 的查表三角函数，这是 FLASH 里最大的一块可回收空间。
 
-### RAM 14,560 B（71.1%）
+### RAM 14,480 B（70.7%）
 
 | 内容 | 大小 | 占 RAM |
 |---|---|---|
-| `.data` 已初始化全局变量 | 96 B | 0.5% |
-| **`.bss` 合计** | **12,924 B** | **63.1%** |
+| `.data` 已初始化全局变量 | 104 B | 0.5% |
+| **`.bss` 合计（`size` 口径）** | **14,376 B** | **70.2%** |
 | 　└ FreeRTOS 堆 `ucHeap` | 9,728 B | 47.5% |
-| 　└ `.bss` 其余全局 / 静态变量（含空闲任务栈 512 B） | 3,196 B | 15.6% |
-| 最小堆（512 B）+ 最小栈（1024 B）预留 | 1,540 B | 7.5% |
-| 未分配（主栈 MSP 可用） | 5,920 B | 28.9% |
+| 　└ `.bss` 其余（含空闲任务栈 512 B、链接脚本预留 1,540 B、其他全局/静态约 2,596 B） | 4,648 B | 22.7% |
+| 未分配（主栈 MSP 可用） | 6,000 B | 29.3% |
 
-> `.bss` 的两行是内部拆解，不是并列项：9,728 + 3,196 = 12,924 B，合计只算一次。
+> `.bss` 的两行是内部拆解，不是并列项：9,728 + 4,648 = 14,376 B，合计只算一次。`arm-none-eabi-size` 的 `.bss` 已包含链接脚本里的 `._user_heap_stack`（`_Min_Heap_Size 0x200` + `_Min_Stack_Size 0x400` = 1,540 B）。
 
 - `ucHeap` 定义在 `heap_4.c` 中：`static uint8_t ucHeap[configTOTAL_HEAP_SIZE]`，未初始化，因此落在 `.bss`；大小就是 `configTOTAL_HEAP_SIZE`（`freeRTOS/Inc/FreeRTOSConfig.h`），所有任务栈、队列、信号量、互斥量都从这里分配。
-- 空闲任务的静态栈 `uxIdleTaskStack` 为 512 B，直接算在 `.bss` 里。
-- `_estack = 0x2000_5000`，已分配区顶到 `0x2000_38E0`，中间 5,920 B 是主栈真正可用的余量（`.data`、`.bss`、堆栈预留之外的空隙）。
+- 空闲任务的静态栈 `uxIdleTaskStack` 为 512 B，直接算在 `.bss` 里（`configKERNEL_PROVIDED_STATIC_MEMORY=1`）。
+- `_estack = 0x2000_5000`，已分配区顶到 `0x2000_3888`，到 `_estack` 之间余 6,008 B（其中 8 B 为对齐间隙，`size` 口径的未分配为 6,000 B），这块就是主栈真正可用的余量。
 - 内存区域定义见 `stm32f103c8tx_flash.ld`：
 
 ```ld
