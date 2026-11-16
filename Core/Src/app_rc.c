@@ -93,9 +93,19 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart != &huart3) return;
+     // 1. 必须清标志，防止中断风暴
+    __HAL_UART_CLEAR_PEFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_OREFLAG(huart);
 
+    // 2. 检查状态，确保底层已经释放了DMA和接收锁
+    if (huart->RxState == HAL_UART_STATE_READY) 
+    {
+        (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_dma_buf[s_dma_idx], MAX_leng);
+    }
     testRcErr++;
-    (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_dma_buf[s_dma_idx], MAX_leng);
+    
 }
 
 /* 遥控接收任务：等一帧就绪，解析 */
