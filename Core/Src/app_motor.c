@@ -51,6 +51,7 @@ void App_Motor_Cmd(uint8_t On){
     }
 }
 void App_Motor_Proc(void* argument){
+   (void)argument;   /* 任务参数未使用 */
    for (;;) {
 
     ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
@@ -71,6 +72,6 @@ void App_Motor_Proc(void* argument){
    }
 }
 
-/* 电机 1ms 环已挂到 TIM2 中断，回调统一放在 main.c 的 HAL_TIM_PeriodElapsedCallback：
-   在 TIM2 分支里先 HAL_IncTick() 喂 HAL 时基，再 App_Motor_Proc() 跑电机环。
-   这里不再重复定义，否则会链接报 multiple definition。 */
+/* 电机 1 ms 环由 TIM2 中断唤醒，不在中断里直接跑 PID：
+   main.c 的 HAL_TIM_PeriodElapsedCallback 在 TIM2 分支里先 HAL_IncTick() 喂 HAL 时基，
+   再 vTaskNotifyGiveFromISR() 唤醒 App_Motor_Proc；本任务拿到通知后才执行速度环。 */

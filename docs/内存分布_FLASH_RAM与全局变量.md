@@ -2,18 +2,18 @@
 
 > 对象：STM32F103C8T6（FLASH 64 KB / RAM 20 KB）
 > 依据：`build/Debug/CARTESTFreertos.map`、`arm-none-eabi-readelf -l/-S`、链接脚本 `stm32f103c8tx_flash.ld`
-> 数据日期：2026-11-16（Debug `-Og` 构型，提交 `d00db29` 后的干净构建）
+> 数据日期：2026-11-17（Debug `-Og` 构型，`main` @ `e74a48f` + 交付批次）
 
 ## 1. 编译输出的含义
 
 ```
 
-RAM:   14,480 B / 20 KB = 70.7%
-FLASH: 48,184 B / 64 KB = 73.5%
+RAM:   14,512 B / 20 KB = 70.9%
+FLASH: 49,712 B / 64 KB = 75.9%
 
 ```
 
-这两个百分比表示“链接器已经分配出去的地址空间占比”，而不是运行时真实用掉的量。最典型的例子：RAM 里的 9.7 KB 是 FreeRTOS 堆，上电就整块划走，用不用都算在 70.7% 里。
+这两个百分比表示“链接器已经分配出去的地址空间占比”，而不是运行时真实用掉的量。最典型的例子：RAM 里的 9.7 KB 是 FreeRTOS 堆，上电就整块划走，用不用都算在 70.9% 里。
 
 ## 2. 全局变量、常量、局部变量放在哪
 
@@ -45,33 +45,33 @@ FLASH: 48,184 B / 64 KB = 73.5%
 
 ## 3. 本项目当前的实际分布
 
-### FLASH 48,184 B（73.5%）
+### FLASH 49,712 B（75.9%）
 
 | 内容 | 大小 | 占比 |
 |---|---|---|
-| 中断向量表 `.isr_vector` | 272 B | 0.4% |
-| 代码 `.text` | 38,912 B | 59.4% |
-| 常量 `.rodata` | 8,892 B | 13.6% |
-| 启动表 `.ARM/.init_array/.fini_array` + `.data` 初值副本 | 108 B | 0.2% |
-| 未使用 | 17,352 B | 26.5% |
+| 中断向量表 `.isr_vector` | 268 B | 0.4% |
+| 代码 `.text` | 40,180 B | 61.3% |
+| 常量 `.rodata` | 9,144 B | 14.0% |
+| 启动表 `.ARM/.init_array/.fini_array` + `.data` 初值副本 | 120 B | 0.2% |
+| 未使用 | 15,824 B | 24.1% |
 
-`.rodata` 里 `sin_vals` 和 `tan_vals` 各 1024 个 float，合计 8,192 B，占了常量的 92%（`Core/Src/qmath.c`）。如果以后不再使用 qmath 的查表三角函数，这是 FLASH 里最大的一块可回收空间。
+`.rodata` 里 `sin_vals` 和 `tan_vals` 各 1024 个 float，合计 8,192 B，占了常量的 89.6%（`Core/Src/qmath.c`）。如果以后不再使用 qmath 的查表三角函数，这是 FLASH 里最大的一块可回收空间。
 
-### RAM 14,480 B（70.7%）
+### RAM 14,512 B（70.9%）
 
 | 内容 | 大小 | 占 RAM |
 |---|---|---|
 | `.data` 已初始化全局变量 | 104 B | 0.5% |
-| **`.bss` 合计（`size` 口径）** | **14,376 B** | **70.2%** |
+| **`.bss` 合计（`size` 口径）** | **14,408 B** | **70.4%** |
 | 　└ FreeRTOS 堆 `ucHeap` | 9,728 B | 47.5% |
-| 　└ `.bss` 其余（含空闲任务栈 512 B、链接脚本预留 1,540 B、其他全局/静态约 2,596 B） | 4,648 B | 22.7% |
-| 未分配（主栈 MSP 可用） | 6,000 B | 29.3% |
+| 　└ `.bss` 其余（含空闲任务栈 512 B、链接脚本预留 1,540 B、其他全局/静态约 2,628 B） | 4,680 B | 22.8% |
+| 未分配（主栈 MSP 可用） | 5,968 B | 29.1% |
 
-> `.bss` 的两行是内部拆解，不是并列项：9,728 + 4,648 = 14,376 B，合计只算一次。`arm-none-eabi-size` 的 `.bss` 已包含链接脚本里的 `._user_heap_stack`（`_Min_Heap_Size 0x200` + `_Min_Stack_Size 0x400` = 1,540 B）。
+> `.bss` 的两行是内部拆解，不是并列项：9,728 + 4,680 = 14,408 B，合计只算一次。`arm-none-eabi-size` 的 `.bss` 已包含链接脚本里的 `._user_heap_stack`（`_Min_Heap_Size 0x200` + `_Min_Stack_Size 0x400` = 1,540 B）。
 
 - `ucHeap` 定义在 `heap_4.c` 中：`static uint8_t ucHeap[configTOTAL_HEAP_SIZE]`，未初始化，因此落在 `.bss`；大小就是 `configTOTAL_HEAP_SIZE`（`freeRTOS/Inc/FreeRTOSConfig.h`），所有任务栈、队列、信号量、互斥量都从这里分配。
 - 空闲任务的静态栈 `uxIdleTaskStack` 为 512 B，直接算在 `.bss` 里（`configKERNEL_PROVIDED_STATIC_MEMORY=1`）。
-- `_estack = 0x2000_5000`，已分配区顶到 `0x2000_3888`，到 `_estack` 之间余 6,008 B（其中 8 B 为对齐间隙，`size` 口径的未分配为 6,000 B），这块就是主栈真正可用的余量。
+- `_estack = 0x2000_5000`，已分配区顶到 `0x2000_38B0`，到 `_estack` 之间余 **5,968 B**，这块就是主栈真正可用的余量。
 - 内存区域定义见 `stm32f103c8tx_flash.ld`：
 
 ```ld
@@ -79,30 +79,23 @@ RAM   (xrw) : ORIGIN = 0x20000000, LENGTH = 20K
 FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 64K
 ```
 
-## 4. 关于 RWX 警告
+## 4. 关于 RWX 警告（已修复）
 
-链接时出现：
+旧版链接脚本的 `.init_array` / `.fini_array` 没有标注只读，导致第一个 LOAD 段被合并成 `RWE`，链接时出现：
 
 ```
-
 CARTESTFreertos.elf has a LOAD segment with RWX permissions
-
 ```
 
-用 `arm-none-eabi-readelf -l` 查看，第一个 LOAD 段权限为 `RWE`：
+2026-11-17 交付批次已给 `stm32f103c8tx_flash.ld` 的 `.ARM.extab`、`.ARM`、`.preinit_array`、`.init_array`、`.fini_array` 加上 `(READONLY)`（GCC 11+ 支持，当前 15.3 满足），该 warning 已消失。
 
+复验命令与预期：
+
+```powershell
+arm-none-eabi-readelf -lW build\Debug\CARTESTFreertos.elf
 ```
 
-LOAD 0x001000 0x08000000 0x08000000 0x0bb9c 0x0bb9c RWE 0x1000
-
-```
-
-原因：同一段里 `.text` 带可执行标志（AX），而 `.init_array` / `.fini_array` 被标记成可写（WA），合并后整段就成了“可读 + 可写 + 可执行”。根因是当前使用的 `stm32f103c8tx_flash.ld` 没有给这两个段加 `(READONLY)`（同目录的 `STM32F103xx_FLASH.ld` 已经加了）。
-
-F103 没有 MMU，该标志不影响运行，可以忽略。想消除警告，有两种做法：
-
-1. 给链接脚本中的 `.init_array`、`.fini_array` 输出段加 `(READONLY)`（需要 binutils 支持，当前 GCC 15.3 满足）；
-2. 链接选项加 `-Wl,--no-warn-rwx-segments`。
+第一个 LOAD 段权限应为 `R E`（不再是 `RWE`）。若在 GCC 10 及更早版本上构建，删除 `(READONLY)` 或改用 `-Wl,--no-warn-rwx-segments`。
 
 ## 5. 想继续压占用时的做法
 

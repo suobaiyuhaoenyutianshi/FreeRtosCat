@@ -63,8 +63,24 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 # Add project symbols (macros)
+# 固件版本：优先取 git describe（tag/提交号/脏标记），导出源码无 .git 时回退 dev
+set(FW_VERSION "dev")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND git describe --tags --always --dirty
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE FW_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(FW_VERSION STREQUAL "")
+        set(FW_VERSION "dev")
+    endif()
+endif()
+message("Firmware version: " ${FW_VERSION})
+
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    FW_VERSION="${FW_VERSION}"
 )
 
 # Add linked libraries

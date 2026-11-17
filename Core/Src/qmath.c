@@ -261,8 +261,11 @@ float qatan2(float y, float x)
 //
 static uint16_t binary_search(const float *sorted_arrray, uint16_t array_length, float target)
 {
-	uint16_t low, mid, high;
-	
+	uint16_t low, mid = 0, high;
+
+	if (array_length == 0U) {
+		return 0U;   /* 空表直接返回，避免 high = array_length-1 无符号回绕 */
+	}
 	low = 0;
 	high = array_length - 1;
 	

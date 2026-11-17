@@ -35,6 +35,7 @@
 #include "stm32f1xx_hal_gpio.h"
 #include "stm32f1xx_hal_uart.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/_types.h>
 #include "app_usart2_dma.h"
 
@@ -106,6 +107,37 @@ static void MX_IWDG_Init(void);
   float AAP;
   volatile uint32_t ssda = 0;   /* 调试面包屑：volatile 保证每次都真写内存，调试器里能看到变化 */
   volatile float test_var = 3.14f; 
+
+/* 版本号由 CMake 注入（FW_VERSION）；EIDE 等非 CMake 构建时回退为 dev */
+#ifndef FW_VERSION
+#define FW_VERSION "dev"
+#endif
+
+/* 复位原因判定：按“最具体优先”的顺序检查，打印后统一清标志，供下一次上电使用 */
+static const char *prvResetCause(void)
+{
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)  != RESET) { return "IWDG"; }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST)  != RESET) { return "WWDG"; }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST)  != RESET) { return "LOWPOWER"; }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)   != RESET) { return "SOFTWARE"; }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)   != RESET) { return "POWER-ON"; }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)   != RESET) { return "PIN"; }
+  return "UNKNOWN";
+}
+
+/* 上电首行：fw ver / build date / reset cause。调度器启动前阻塞直发，不依赖 RTOS */
+static void prvPrintBootInfo(void)
+{
+  char line[96];
+  int n = snprintf(line, sizeof(line), "fw %s | build %s %s | reset %s\r\n",
+                   FW_VERSION, __DATE__, __TIME__, prvResetCause());
+  if (n > 0)
+  {
+    if (n > (int)sizeof(line) - 1) { n = (int)sizeof(line) - 1; }
+    HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)n, 50);
+  }
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+}
 /* USER CODE END 0 */
 
 /**
@@ -149,6 +181,8 @@ int s =1;
   MX_USART3_UART_Init();
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
+  /* ---- 上电首行：固件版本 / 构建时间 / 复位原因 ---- */
+  prvPrintBootInfo();
   /* ---- 调试标记：阻塞式直接发串口，绕过 FreeRTOS 队列/DMA 打印链路 ----
      看到 "B1" 说明 MCU 已经跑到这里，且 USART2 硬件通路正常 */
   HAL_UART_Transmit(&huart2, (uint8_t *)"B1\r\n", 4, 50);
@@ -159,7 +193,7 @@ int s =1;
   /* ---- 中断优先级统一编排（所有 MX_*_Init 之后执行，覆盖它们设的值）----
    * 数字越小优先级越高；ISR 里要调 FreeRTOS FromISR 接口的，数值必须 >= 5。
    *   TIM2(HAL 1ms 时基) = 5：回调里会 vTaskNotifyGiveFromISR
-   *   USART3(蓝牙逐字节)  = 5：回调里会 xSemaphoreGiveFromISR
+   *   USART3(蓝牙 DMA + 空闲中断) = 5：回调里会 xSemaphoreGiveFromISR
    *   EXTI(编码器)/ADC/TIM1/TIM3/TIM4 = 6：高频中断，不能压过上面两个，否则 tick 被饿死
    */
   HAL_NVIC_SetPriority(TIM2_IRQn,        5U, 0U);
@@ -240,12 +274,6 @@ int s =1;
   /* 启动调度器。正常情况永远不会返回 */
   HAL_UART_Transmit(&huart2, (uint8_t *)"B2\r\n", 4, 50);   /* 看到 B2 = 所有初始化都过了 */
   vTaskStartScheduler();
-
-/*uint8_t TE[] = "holl";
- uint8_t txData[] = "Hello, UART!\r\n";
-    uint16_t dataLen = sizeof(txData) - 1; // 不发送末尾的 '\0'
-     HAL_UART_Transmit(&huart2, txData, dataLen, HAL_MAX_DELAY);
-HAL_UART_Transmit(&huart2,TE,strlen(TE),HAL_MAX_DELAY);
 
   /* USER CODE END 2 */
 

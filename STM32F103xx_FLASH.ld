@@ -49,6 +49,10 @@
 *****************************************************************************
 */
 
+/* 说明：当前 CMake/GCC 预设使用的是根目录 stm32f103c8tx_flash.ld。
+   本文件只在 cmake/starm-clang.cmake（ARMClang 工具链）路径下被引用，
+   不参与默认构建，也不要用它计算 FLASH/RAM 基线。 */
+
 /* Entry Point */
 ENTRY(Reset_Handler)
 
