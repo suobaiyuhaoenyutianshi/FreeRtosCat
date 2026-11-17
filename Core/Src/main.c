@@ -204,6 +204,11 @@ int s =1;
   BOOT_STEP('8');
   App_Motor_Init();
   BOOT_STEP('9');
+  /* ---- 上电自动标定：先左轮、再右轮，各自测出编码器 A 相占空比 ----
+     注意：本函数会直接驱动电机，必须【车轮架空】再上电，否则小车会向前跑。
+     放在这里是因为：调度器未启动（TIM2 不会触发 PID）、PWM/DWT/编码器均已初始化；
+     函数内部每 50ms 手动喂一次 IWDG，不会触发看门狗复位。 */
+  App_Encoder_AutoCalibrate();
   App_USART2_Init();
   BOOT_STEP('A');
 
