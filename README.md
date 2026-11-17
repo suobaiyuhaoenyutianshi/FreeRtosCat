@@ -78,12 +78,12 @@ move <turn> <speed>
 
 | 构型 | 命令 | FLASH | RAM |
 |---|---|---|---|
-| Debug | `cmake --build --preset Debug` | 49,712 B / 64 KB（75.9%） | 14,512 B / 20 KB（70.9%） |
-| MinSizeRel | `cmake --build --preset MinSizeRel` | **44,840 B（68.4%）** | 14,512 B（70.9%） |
-| Release | `cmake --build --preset Release` | 52,956 B（80.8%） | 14,512 B（70.9%） |
+| Debug | `cmake --build --preset Debug` | 49,704 B / 64 KB（75.8%） | 14,512 B / 20 KB（70.9%） |
+| MinSizeRel | `cmake --build --preset MinSizeRel` | **44,832 B（68.4%）** | 14,512 B（70.9%） |
+| Release | `cmake --build --preset Release` | 52,948 B（80.8%） | 14,512 B（70.9%） |
 
 > **发布用 MinSizeRel。** Release 预设的 `-O3` 追加在工具链 `-Os` 之后，实际生效 `-O3`，体积反而更大。
-> 数据为 2026-11-17 干净检出实测（`arm-none-eabi-size` 的 `text+data` / `data+bss` 口径），复现命令见 [docs/构建基线.md](docs/构建基线.md)。
+> 数据为 2026-11-17 `git clone` 到空目录后实测（`arm-none-eabi-size` 的 `text+data` / `data+bss` 口径），复现命令见 [docs/构建基线.md](docs/构建基线.md)。版本字符串长度会让 FLASH 有 ±8 B 浮动。
 
 ## 软件结构
 
@@ -116,7 +116,7 @@ docs/                设计、调试、变更记录与构建基线
 
 | # | 验收项 | 状态 | 证据 |
 |---|---|---|---|
-| 1 | 空目录干净检出，`cmake --preset Debug && cmake --build` 0 error 0 warning | **通过** | 2026-11-17 复制到空目录（排除 `build/`、`.git`）后实测；工作区 Debug/MinSizeRel/Release 三构型均 0 warning |
+| 1 | 空目录干净检出，`cmake --preset Debug && cmake --build` 0 error 0 warning | **通过** | 2026-11-17 `git clone` 到空目录实测（版本 `baseline-2026-11-16-3-gff07ede`）；工作区 Debug/MinSizeRel/Release 三构型均 0 warning |
 | 2 | 陌生人按 README 5 分钟编译 + 烧录 + 看到版本行 | 待陌生人实测 | 自测流程已跑通；烧录步骤见第 3 节 |
 | 3 | 上电到首行 < 3 s，复位原因可区分上电/看门狗/软复位 | **代码已实现，待上板** | 首行 `fw ... reset ...`；`prvResetCause()` 见 [main.c](Core/Src/main.c) |
 | 4 | 本批提交只含本阶段文件，`git status` 干净 | **已提交 `504df4d`** | 本批文件清单与改前/改后见 [交付基线变更记录](docs/变更记录_交付基线_2026-11-17.md) |

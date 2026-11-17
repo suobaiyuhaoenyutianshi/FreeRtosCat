@@ -2,14 +2,14 @@
 
 > 对象：STM32F103C8T6（FLASH 64 KB / RAM 20 KB）
 > 依据：`build/Debug/CARTESTFreertos.map`、`arm-none-eabi-readelf -l/-S`、链接脚本 `stm32f103c8tx_flash.ld`
-> 数据日期：2026-11-17（Debug `-Og` 构型，`main` @ `e74a48f` + 交付批次）
+> 数据日期：2026-11-17（Debug `-Og` 构型，`main` @ `ff07ede` 的干净 clone）
 
 ## 1. 编译输出的含义
 
 ```
 
 RAM:   14,512 B / 20 KB = 70.9%
-FLASH: 49,712 B / 64 KB = 75.9%
+FLASH: 49,704 B / 64 KB = 75.8%
 
 ```
 
@@ -45,17 +45,17 @@ FLASH: 49,712 B / 64 KB = 75.9%
 
 ## 3. 本项目当前的实际分布
 
-### FLASH 49,712 B（75.9%）
+### FLASH 49,704 B（75.8%）
 
 | 内容 | 大小 | 占比 |
 |---|---|---|
 | 中断向量表 `.isr_vector` | 268 B | 0.4% |
 | 代码 `.text` | 40,180 B | 61.3% |
-| 常量 `.rodata` | 9,144 B | 14.0% |
+| 常量 `.rodata` | 9,136 B | 13.9% |
 | 启动表 `.ARM/.init_array/.fini_array` + `.data` 初值副本 | 120 B | 0.2% |
-| 未使用 | 15,824 B | 24.1% |
+| 未使用 | 15,832 B | 24.2% |
 
-`.rodata` 里 `sin_vals` 和 `tan_vals` 各 1024 个 float，合计 8,192 B，占了常量的 89.6%（`Core/Src/qmath.c`）。如果以后不再使用 qmath 的查表三角函数，这是 FLASH 里最大的一块可回收空间。
+`.rodata` 里 `sin_vals` 和 `tan_vals` 各 1024 个 float，合计 8,192 B，占了常量的 89.7%（`Core/Src/qmath.c`）。如果以后不再使用 qmath 的查表三角函数，这是 FLASH 里最大的一块可回收空间。
 
 ### RAM 14,512 B（70.9%）
 
