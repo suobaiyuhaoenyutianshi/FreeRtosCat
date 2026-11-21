@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "FreeRTOS.h"
 #include "memory_monitor.h"
+#include "semphr.h"
 #include "portmacro.h"
 #include "projdefs.h"
 #include "task.h"
@@ -189,7 +190,7 @@ int s =1;
 #define BOOT_STEP(c)  do { uint8_t _c = (uint8_t)(c); HAL_UART_Transmit(&huart2, &_c, 1, 20); } while (0)
   /* 调试断点时暂停 IWDG 计数，否则 CPU 一停就被复位（仅连接调试器时生效） */
   __HAL_DBGMCU_FREEZE_IWDG();
-
+  
   /* ---- 中断优先级统一编排（所有 MX_*_Init 之后执行，覆盖它们设的值）----
    * 数字越小优先级越高；ISR 里要调 FreeRTOS FromISR 接口的，数值必须 >= 5。
    *   TIM2(HAL 1ms 时基) = 5：回调里会 vTaskNotifyGiveFromISR
